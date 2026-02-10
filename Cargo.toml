@@ -1,0 +1,38 @@
+[package]
+name = "polymarket-copytrade"
+version = "0.1.0"
+authors = ["Rafael Lemos <contact@flemosr.com>"]
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+futures-util = "0.3"
+url = "2"
+
+[[bin]]
+name = "probe_trades"
+path = "src/bin/probe_trades.rs"
+
+[[bin]]
+name = "probe_positions"
+path = "src/bin/probe_positions.rs"
+
+[[bin]]
+name = "probe_rtds"
+path = "src/bin/probe_rtds.rs"
+
+[[bin]]
+name = "probe_clob_ws"
+path = "src/bin/probe_clob_ws.rs"
+
+[[bin]]
+name = "probe_ws_btc"
+path = "src/bin/probe_ws_btc.rs"
