@@ -35,7 +35,7 @@ We chose **portfolio mirroring** because full alignment ensures our returns matc
 - [Proxy Wallet Documentation](https://docs.polymarket.com/developers/proxy-wallet)
 - [Get trades for a user or markets](https://docs.polymarket.com/api-reference/core/get-trades-for-a-user-or-markets)
 - [Get current positions for a user](https://docs.polymarket.com/api-reference/core/get-current-positions-for-a-user)
-- **Gamma API:** `gamma-api.polymarket.com` — market/event lookup by slug (Data API slug lookups return 404)
+- **Gamma API:** `gamma-api.polymarket.com` — market metadata and pricing by token ID, condition ID, or slug. Used for exit pricing (resolved/exited positions). SDK: `polymarket-client-sdk` `gamma` feature → `gamma::Client`
 - **Rust SDK:** [Polymarket/rs-clob-client](https://github.com/Polymarket/rs-clob-client) — `polymarket-client-sdk` on [crates.io](https://crates.io/crates/polymarket-client-sdk) / [docs.rs](https://docs.rs/polymarket-client-sdk)
 - **RTDS TypeScript SDK:** [Polymarket/real-time-data-client](https://github.com/Polymarket/real-time-data-client) — authoritative source for all 8 RTDS topics
 - **Leaderboard API:** `GET https://data-api.polymarket.com/v1/leaderboard?limit=15&orderBy=vol&timePeriod=day` — find active traders by volume
@@ -99,7 +99,7 @@ Results will be documented in `EXPLORATION.md` with:
 
 ## Phase 2: Core Dry-Run
 
-Based on exploration results, implement the core copytrading simulation. Uses `polymarket-client-sdk` with the `data` feature for typed REST access (positions, trades). Single crate layout (not a workspace).
+Based on exploration results, implement the core copytrading simulation. Uses `polymarket-client-sdk` with `data` + `gamma` features — `data` for typed REST access (positions, trades), `gamma` for market price lookups on exit. Single crate layout (not a workspace).
 
 - Project scaffolding (single crate, dependencies, CLI with `clap`)
 - Portfolio snapshot — fetch trader's current positions via SDK `client.positions()`, compute portfolio weights. Active position filter: `current_value > 0 && 0 < cur_price < 1` — this excludes resolved markets (price at 0 or 1), fully-exited positions (value = 0), and unredeemed settled shares.
@@ -109,7 +109,8 @@ Based on exploration results, implement the core copytrading simulation. Uses `p
 - Rebalancing — on each detected trade, recompute target state from the trader's updated positions, diff against our current holdings. Process sells first (freeing budget), then buys (consuming budget). Buys are capped by available budget with partial fill support. Orders below $0.01 are skipped.
 - Trading state — track holdings, remaining budget, cumulative spend, realized P&L; sell proceeds flow back into budget
 - Structured reporting — JSON event lines to stdout (one per rebalancing cycle) + exit summary (pretty JSON with holdings, P&L, totals). Tracing logs to stderr. Configurable via `POLL_INTERVAL_SECS` env var (default 10s, set in `.env`).
-- Graceful shutdown on Ctrl+C — fetches latest prices and reports exit summary with unrealized P&L
+- Exit pricing — when a held position leaves the active target set (trader exits or market resolves), the engine resolves its price via a two-layer lookup: (1) active positions from the data API, (2) gamma API (`markets?clob_token_ids=<id>`) for assets not found in layer 1. This covers resolved markets (price 0 or 1) and voluntary exits where the position disappears from the filtered response. Gamma errors propagate — no silent fallbacks. Exit events are logged with reason (`resolved` vs `trader exited`) and a short trader ID (last 6 chars of address) for future multi-trader support.
+- Graceful shutdown on Ctrl+C — fetches latest prices (with gamma enrichment for missing assets) and reports exit summary with unrealized P&L
 
 ### CLI Target
 
