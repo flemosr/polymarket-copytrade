@@ -20,9 +20,9 @@ We chose **portfolio mirroring** because full alignment ensures our returns matc
 
 ### Key Concepts
 
-- **copy-percentage** — proportion of our budget allocated to replicating the target trader's portfolio. If the trader has 40% of their portfolio in market X, we allocate 40% of `budget × copy_percentage` to market X. This ensures proportional alignment with the trader's conviction across all positions.
+- **copy-percentage** — proportion of our running capital allocated to replicating the target trader's portfolio. If the trader has 40% of their portfolio in market X, we allocate 40% of `running_budget × copy_percentage` to market X. This ensures proportional alignment with the trader's conviction across all positions. In multi-trader mode, each trader gets their own allocation percentage (must sum to ≤100%).
 - **max-trade-size** — hard cap on the amount allocated to any single market position (in USD). In our portfolio mirroring approach, each "trade" is a position adjustment to stay aligned with the target trader — max-trade-size caps the total size of that position, not individual orders.
-- **budget** — total capital allocated to copytrading. Sell proceeds flow back into the budget.
+- **budget** — initial capital allocated to copytrading. Sets the starting `budget_remaining`. The bot's effective capital (running budget) is `budget_remaining + holdings_market_value`, which floats with P&L — losses shrink position sizes, gains grow them. In live mode, budget also validates against the actual account balance at startup (error if balance < budget).
 
 ---
 
@@ -103,13 +103,14 @@ Based on exploration results, implement the core copytrading simulation. Uses `p
 
 - Project scaffolding (single crate, dependencies, CLI with `clap`)
 - Portfolio snapshot — fetch trader's current positions via SDK `client.positions()`, compute portfolio weights. Active position filter: `current_value > 0 && 0 < cur_price < 1` — this excludes resolved markets (price at 0 or 1), fully-exited positions (value = 0), and unredeemed settled shares.
-- Target state computation — for each market the trader holds, compute `target = min(trader_weight × budget × copy_percentage, max_trade_size)`. Targets always use the full original budget, not the remaining budget — this ensures proportional alignment even after spending.
+- Target state computation — for each market the trader holds, compute `target = min(trader_weight × running_budget × copy_percentage, max_trade_size)`. The running budget is `budget_remaining + holdings_market_value` — this is the bot's effective capital at that moment. Losses shrink it (reducing position sizes proportionally), gains grow it (allowing larger positions). The `--budget` CLI arg sets the initial capital; in live mode it also serves as a validation floor against the actual account balance.
 - Initial replication — diff target state against our current holdings (initially empty), generate buy orders to align
 - Trade detection — REST polling via SDK `client.trades()` with `transaction_hash.to_string()` dedup (B256 → String in a HashSet) as a trigger to recompute
-- Rebalancing — on each detected trade, recompute target state from the trader's updated positions, diff against our current holdings. Process sells first (freeing budget), then buys (consuming budget). Buys are capped by available budget with partial fill support. Orders below $0.01 are skipped.
+- Rebalancing — on each detected trade, recompute target state from the trader's updated positions, diff against our current holdings. Process sells first (freeing budget), then buys (consuming budget). Buys are capped by available budget with partial fill support. Rebalancing orders below $0.01 are skipped, but exit sells always go through regardless of proceeds (to ensure cleanup of resolved-at-zero positions).
 - Trading state — track holdings, remaining budget, cumulative spend, realized P&L; sell proceeds flow back into budget
 - Structured reporting — JSON event lines to stdout (one per rebalancing cycle) + exit summary (pretty JSON with holdings, P&L, totals). Tracing logs to stderr. Configurable via `POLL_INTERVAL_SECS` env var (default 10s, set in `.env`).
-- Exit pricing — when a held position leaves the active target set (trader exits or market resolves), the engine resolves its price via a two-layer lookup: (1) active positions from the data API, (2) gamma API (`markets?clob_token_ids=<id>`) for assets not found in layer 1. This covers resolved markets (price 0 or 1) and voluntary exits where the position disappears from the filtered response. Gamma errors propagate — no silent fallbacks. Exit events are logged with reason (`resolved` vs `trader exited`) and a short trader ID (last 6 chars of address) for future multi-trader support.
+- Exit pricing — when a held position leaves the active target set (trader exits or market resolves), the engine resolves its price via a two-layer lookup: (1) active positions from the data API, (2) gamma API (`markets?clob_token_ids=<id>`) for assets not found in layer 1. This covers resolved markets (price 0 or 1) and voluntary exits where the position disappears from the filtered response. Gamma errors propagate — no silent fallbacks. Exit sells always execute regardless of proceeds amount (a position resolved at price 0 produces $0 proceeds but must still be removed from holdings to avoid stale state). Exit events are logged with reason (`resolved` vs `trader exited`) and a short trader ID (last 6 chars of address) for future multi-trader support.
+- Resolution timing — market resolutions are not instantaneous at close time. The UMA oracle settlement process introduces a delay of 5-20 minutes between a market's scheduled close and when the data API reflects the resolved price (0 or 1). This is inherent to Polymarket's resolution mechanism, not a polling artifact.
 - Graceful shutdown on Ctrl+C — fetches latest prices (with gamma enrichment for missing assets) and reports exit summary with unrealized P&L
 
 ### CLI Target
@@ -126,12 +127,73 @@ copytrade --dry-run \
 
 ## Phase 3: Live Execution
 
-Extend the bot to execute real trades via the CLOB API. Phase 2 already uses the SDK's `data` feature for read-only access; Phase 3 adds the `clob` feature for authenticated order placement (signing, API keys, order execution).
+Extend the bot to execute real trades via the CLOB API. The CLOB module is always available in the SDK (no feature gate). Phase 3 adds authenticated order placement: credential derivation, order signing (EIP-712), and submission.
 
-- Account setup command (private key, API credential derivation)
-- Order execution via `polymarket-client-sdk` CLOB client
-- Order status tracking and logging
-- Retry with exponential backoff for order placement and API calls
+### Account Setup
+
+Prerequisite: a Polymarket account with a funded funder address. The funder must match the address shown on the Polymarket profile (proxy wallet for browser/Magic wallets, EOA for standalone wallets).
+
+One-time on-chain setup before live trading:
+
+1. **Derive API credentials** — `client.create_or_derive_api_key(&signer, None)` returns `Credentials { key, secret, passphrase }`. Idempotent — safe to call on every startup, or persist credentials to skip the round-trip.
+2. **On-chain token approvals** — the SDK does NOT handle these (the docs just say "ensure proper token approvals"). Must send approval transactions via alloy `Provider`. Contract addresses sourced from SDK `contract_config()` and `examples/approvals.rs`:
+   - ERC-20 `approve(spender, U256::MAX)` on USDCe (`0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`) for three spenders:
+     - CTF Exchange (`0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E`)
+     - Neg Risk CTF Exchange (`0xC5d563A36AE78145C45a50134d48A1215220f80a`)
+     - Neg Risk Adapter (`0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296`)
+   - ERC-1155 `setApprovalForAll(operator, true)` on Conditional Tokens (`0x4D97DCd97eC945f40cF65F87097ACe5EA0476045`) for the same three spenders
+   - Requires POL for gas. SDK provides `contract_config()` for addresses.
+3. **Signature type detection** — depends on wallet type: `Eoa` (type 0, standalone wallet), `Proxy` (type 1, Magic/email login), `GnosisSafe` (type 2, browser wallet). The SDK auto-derives the funder (proxy wallet) address via CREATE2 for non-EOA types.
+
+### Authentication Flow
+
+```
+Private Key (hex) → alloy LocalSigner (.with_chain_id(137))
+  → Client::new(url).authentication_builder(&signer)
+    .signature_type(type)
+    .authenticate().await?
+  → Client<Authenticated<Normal>>
+```
+
+The authenticated client is `Clone + Send + Sync` (internally `Arc`). Note: `authenticate()` consumes the client via `Arc::into_inner()`, so auth must happen before cloning.
+
+### Order Execution
+
+Map `SimulatedOrder` to CLOB orders:
+
+```
+SimulatedOrder { token_id, side, price, shares }
+  → client.limit_order()
+    .token_id(id).side(side).price(price).size(shares)
+    .build().await?           → SignableOrder
+  → client.sign(&signer, so) → SignedOrder
+  → client.post_order(so)    → PostOrderResponse { success, order_id, status, error_msg }
+```
+
+Design decisions:
+- **Limit orders (GTC)** by default — ensures we get our target price or better, avoids slippage on thin books. Market orders (FOK/FAK) as an option for time-sensitive fills.
+- **Tick size validation** — SDK's `tick_size(token_id)` returns the minimum price increment (cached). The order builder enforces this.
+- **Lot size** — max 2 decimal places on share quantities (`LOT_SIZE_SCALE = 2`).
+- **`balance_allowance()`** — check USDCe balance and approval status before placing orders.
+- **`postOnly` option** — for limit orders, prevents immediate matching against existing liquidity (order is rejected if marketable). Useful to guarantee maker fees, but may cause rejections in fast-moving markets — evaluate per use case.
+
+### Order Status Tracking
+
+Poll `client.order(order_id)` after submission. Status lifecycle: `Live → Matched | Canceled | Delayed | Unmatched`. Track `size_matched` for partial fills. Log order outcomes as structured events (same stdout JSON format as dry-run).
+
+### Retry Logic
+
+SDK has no built-in retry. Wrap order submission with exponential backoff for transient failures (HTTP 429/5xx, network errors). Non-retryable errors (insufficient balance, invalid price, geoblock) should fail fast with a clear message.
+
+### Implementation Checklist
+
+- [ ] `setup-account` subcommand — on-chain approvals (alloy `Provider` + `sol!` macro, needs `alloy` with `contract`, `providers`, `reqwest` features)
+- [ ] Auth module — `LocalSigner` creation, `authentication_builder` flow, optional credentials persistence
+- [ ] Order executor — `SimulatedOrder` → limit order build/sign/post pipeline
+- [ ] Order tracker — poll for fill status, handle partial fills, log outcomes
+- [ ] Retry wrapper — exponential backoff for `post_order` and API calls
+- [ ] `--live` mode in main binary — same polling loop as dry-run but with real order execution after `compute_orders`
+- [ ] Balance guard — check USDCe balance before each order batch, skip if insufficient
 
 ### CLI Target
 
@@ -139,11 +201,13 @@ Extend the bot to execute real trades via the CLOB API. Phase 2 already uses the
 copytrade setup-account --private-key <key>
 
 copytrade --live \
-  --trader-address <polygon-address> \
+  --trader-address <proxy-wallet-address> \
   --budget <usd-amount> \
   --copy-percentage <0-100> \
   --max-trade-size <usd-amount>
 ```
+
+Environment: `POLYMARKET_PRIVATE_KEY` (hex), `POLYGON_RPC_URL` (for on-chain approvals only).
 
 ---
 
