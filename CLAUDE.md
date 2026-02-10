@@ -16,8 +16,22 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 
 - **Language:** Rust
 - **CLI:** `clap`
-- **SDK:** `polymarket-client-sdk` (rs-clob-client)
+- **SDK:** `polymarket-client-sdk` v0.3 with `data` feature (rs-clob-client)
 - **Data sources:** REST polling (`data-api.polymarket.com`); RTDS WebSocket planned for Phase 5
+- **Output:** JSON events to stdout, tracing logs to stderr
+- **Config:** CLI args + `.env` file (`POLL_INTERVAL_SECS`, `RUST_LOG`)
+
+### Module Structure
+
+| Module | Purpose |
+|--------|---------|
+| `src/types.rs` | Domain types (`MarketPosition`, `TargetAllocation`, `SimulatedOrder`, `HeldPosition`, `CopytradeEvent`, `ExitSummary`) |
+| `src/api.rs` | Paginated SDK wrappers (`fetch_active_positions`, `fetch_recent_trades`) |
+| `src/engine.rs` | Portfolio math (`compute_weights`, `compute_target_state`, `compute_orders`) |
+| `src/state.rs` | `TradingState` — holdings, budget, P&L tracking |
+| `src/reporter.rs` | JSON output (event lines + pretty exit summary) |
+| `src/bin/copytrade.rs` | Main binary — CLI, initial replication, polling loop, shutdown |
+| `src/bin/probe_*.rs` | Phase 1 exploration probes (unchanged) |
 
 ## Plan Progress
 
@@ -29,15 +43,20 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 - [x] Write EXPLORATION.md with findings
 
 ### Phase 2: Core Dry-Run
-- [ ] Project scaffolding (Cargo workspace, deps, CLI)
-- [ ] Portfolio snapshot and weight computation
-- [ ] Target state computation
-- [ ] Initial replication (diff + buy orders)
-- [ ] Trade detection (REST polling)
-- [ ] Rebalancing logic
-- [ ] Trading state tracking (holdings, budget, spend)
-- [ ] Structured reporting (JSON/table/log)
-- [ ] Graceful shutdown (Ctrl+C)
+- [x] Project scaffolding (Cargo workspace, deps, CLI)
+- [x] Portfolio snapshot and weight computation
+- [x] Target state computation
+- [x] Initial replication (diff + buy orders)
+- [x] Trade detection (REST polling)
+- [x] Rebalancing logic
+- [x] Trading state tracking (holdings, budget, spend)
+- [x] Structured reporting (JSON/table/log)
+- [x] Graceful shutdown (Ctrl+C)
+- [ ] Accurate exit pricing (unfiltered positions + gamma API fallback)
+
+**Testing findings:** Tested 30 min against a crypto up/down bot (`0xe594...`). These bots trade in concentrated bursts at 15-min window boundaries — REST polling at 5s catches them reliably. 8 rebalancing events, 191 simulated orders, +$14.17 simulated P&L. Sells-before-buys rebalancing and partial fills confirmed correct.
+
+**Known gap — exit pricing (must fix before relying on P&L):** When the trader fully exits a position (voluntary sell or market settlement), it vanishes from the filtered positions response and falls out of the target set. The "trader exited" sell path (`engine.rs:129`) falls back to `avg_cost` as the exit price — this produces zero realized P&L on every exit and invalidates the simulation. The `avg_cost` fallback must be eliminated. Fix: (1) fetch unfiltered positions (drop the `cur_price` filter) to build a full price map covering settled/exited positions still in the API, (2) for any holdings not found, look up the market via gamma API (`gamma-api.polymarket.com`) to get the current or resolved price.
 
 ### Phase 3: Live Execution
 - [ ] Account setup command
@@ -67,8 +86,26 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 - [ ] Config examples
 - [ ] Final testing with real trader
 
+## Running (Dry-Run)
+
+```bash
+cp .env.template .env          # adjust POLL_INTERVAL_SECS if desired
+cargo run --bin copytrade -- \
+  --dry-run \
+  --trader-address 0x<proxy_wallet> \
+  --budget 1000 \
+  --copy-percentage 50 \
+  --max-trade-size 200
+```
+
+JSON events stream to stdout; logs to stderr. Ctrl+C triggers an exit summary.
+
+To find active traders: `GET https://data-api.polymarket.com/v1/leaderboard?limit=15&orderBy=vol&timePeriod=day`
+
 ## Conventions
 
 - Exploration probes go in standalone files/binaries before being integrated
 - Results and API findings documented in `EXPLORATION.md`
 - All secrets/keys kept out of version control
+- `.env.template` is the canonical env-var reference; `.env` is gitignored
+- Temporary/debug logs go in `log/` (gitignored)
