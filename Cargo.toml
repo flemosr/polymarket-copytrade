@@ -16,7 +16,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 futures-util = "0.3"
 url = "2"
-polymarket-client-sdk = { version = "0.3", features = ["data"] }
+polymarket-client-sdk = { version = "0.3", features = ["data", "gamma"] }
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
 tracing = "0.1"

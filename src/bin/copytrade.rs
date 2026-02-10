@@ -4,11 +4,14 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::Parser;
 use polymarket_client_sdk::data::Client;
+use polymarket_client_sdk::gamma::Client as GammaClient;
 use polymarket_client_sdk::types::Address;
 use rust_decimal::prelude::ToPrimitive;
 use tracing::{info, warn};
 
-use polymarket_copytrade::api::{fetch_active_positions, fetch_recent_trades};
+use polymarket_copytrade::api::{
+    build_exit_price_map, fetch_active_positions, fetch_recent_trades,
+};
 use polymarket_copytrade::engine::{compute_orders, compute_target_state, compute_weights};
 use polymarket_copytrade::reporter;
 use polymarket_copytrade::state::TradingState;
@@ -71,6 +74,7 @@ async fn main() -> Result<()> {
         .trader_address
         .parse()
         .map_err(|e| anyhow::anyhow!("Invalid trader address: {e}"))?;
+    let trader_short_id = &args.trader_address[args.trader_address.len().saturating_sub(6)..];
 
     let poll_interval_secs: u64 = std::env::var("POLL_INTERVAL_SECS")
         .ok()
@@ -83,6 +87,7 @@ async fn main() -> Result<()> {
     );
 
     let data_client = Client::default();
+    let gamma_client = GammaClient::default();
     let mut state = TradingState::new(args.budget);
     let mut seen_hashes: HashSet<String> = HashSet::new();
 
@@ -97,7 +102,13 @@ async fn main() -> Result<()> {
                 let weights = compute_weights(&positions);
                 let targets =
                     compute_target_state(&weights, args.budget, copy_pct, args.max_trade_size);
-                let orders = compute_orders(&targets, &state, state.budget_remaining);
+                let orders = compute_orders(
+                    &targets,
+                    &state,
+                    state.budget_remaining,
+                    &HashMap::new(),
+                    trader_short_id,
+                );
                 state.apply_orders(&orders);
 
                 let event = CopytradeEvent {
@@ -144,7 +155,9 @@ async fn main() -> Result<()> {
             _ = tokio::time::sleep(poll_duration) => {
                 if let Err(e) = poll_cycle(
                     &data_client,
+                    &gamma_client,
                     trader_addr,
+                    trader_short_id,
                     &mut state,
                     &mut seen_hashes,
                     args.budget,
@@ -159,13 +172,16 @@ async fn main() -> Result<()> {
 
     // --- Exit summary ---
     info!("Computing exit summary...");
-    let latest_prices = match fetch_active_positions(&data_client, trader_addr).await {
+    let active_prices = match fetch_active_positions(&data_client, trader_addr).await {
         Ok(positions) => build_price_map(&positions),
         Err(e) => {
             warn!("Failed to fetch final positions for exit summary: {e}");
             HashMap::new()
         }
     };
+    let held_assets: Vec<String> = state.holdings.keys().cloned().collect();
+    let latest_prices =
+        build_exit_price_map(&gamma_client, &active_prices, &held_assets).await?;
     let summary = state.exit_summary(&latest_prices);
     reporter::report_exit_summary(&summary);
 
@@ -175,7 +191,9 @@ async fn main() -> Result<()> {
 /// One polling cycle: fetch recent trades, detect new ones, rebalance if needed.
 async fn poll_cycle(
     client: &Client,
+    gamma: &GammaClient,
     addr: Address,
+    trader_short_id: &str,
     state: &mut TradingState,
     seen_hashes: &mut HashSet<String>,
     budget: f64,
@@ -201,14 +219,16 @@ async fn poll_cycle(
     info!("Detected {} new trade(s), rebalancing...", new_hashes.len());
 
     let positions = fetch_active_positions(client, addr).await?;
-    if positions.is_empty() {
-        warn!("Trader has no active positions after new trades");
-        return Ok(());
-    }
+    let active_prices = build_price_map(&positions);
 
     let weights = compute_weights(&positions);
     let targets = compute_target_state(&weights, budget, copy_pct, max_trade_size);
-    let orders = compute_orders(&targets, state, state.budget_remaining);
+
+    // Build price map with gamma fallback for held assets the trader exited
+    let held_assets: Vec<String> = state.holdings.keys().cloned().collect();
+    let price_map = build_exit_price_map(gamma, &active_prices, &held_assets).await?;
+
+    let orders = compute_orders(&targets, state, state.budget_remaining, &price_map, trader_short_id);
 
     if !orders.is_empty() {
         state.apply_orders(&orders);

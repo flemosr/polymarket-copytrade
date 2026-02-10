@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use polymarket_client_sdk::data::types::response::Position;
 use rust_decimal::prelude::ToPrimitive;
+use tracing::{info, warn};
 
 use crate::state::TradingState;
 use crate::types::{MarketPosition, OrderSide, SimulatedOrder, TargetAllocation};
@@ -75,10 +78,15 @@ pub fn compute_target_state(
 
 /// Compute the diff between target allocations and current holdings, producing
 /// simulated orders. Processes sells first (to free budget), then buys.
+///
+/// `price_map` provides real market prices for assets the trader has exited.
+/// Used instead of `avg_cost` to get accurate realized P&L on exits.
 pub fn compute_orders(
     targets: &[TargetAllocation],
     state: &TradingState,
     budget_remaining: f64,
+    price_map: &HashMap<String, f64>,
+    trader_short_id: &str,
 ) -> Vec<SimulatedOrder> {
     let mut sells = Vec::new();
     let mut buys = Vec::new();
@@ -128,10 +136,25 @@ pub fn compute_orders(
     // Sell holdings that the trader has exited entirely
     for (asset, held) in &state.holdings {
         if !target_assets.contains(asset.as_str()) && held.shares > 0.0 {
-            // Trader exited this position — we don't have a current price from
-            // targets, so use avg_cost as a conservative estimate. In a real
-            // scenario the exit summary will use the latest fetched price.
-            let price = held.avg_cost;
+            let price = match price_map.get(asset) {
+                Some(&p) => p,
+                None => {
+                    warn!(
+                        "[{trader_short_id}] No market price for exited asset {} ({}), skipping sell",
+                        asset, held.title
+                    );
+                    continue;
+                }
+            };
+            let reason = if price == 0.0 || price == 1.0 {
+                "resolved"
+            } else {
+                "trader exited"
+            };
+            info!(
+                "[{trader_short_id}] Position exit: \"{}\" ({}) — price: {price:.4} ({reason})",
+                held.title, held.outcome
+            );
             let proceeds = held.shares * price;
             if proceeds >= MIN_ORDER_USD {
                 sells.push(SimulatedOrder {

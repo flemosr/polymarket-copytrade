@@ -93,7 +93,7 @@ impl TradingState {
         let mut unrealized_pnl = 0.0;
 
         for (asset, held) in &self.holdings {
-            let cur_price = latest_prices.get(asset).copied().unwrap_or(held.avg_cost);
+            let cur_price = latest_prices.get(asset).copied().unwrap_or(0.0);
             let current_value = held.shares * cur_price;
             let position_unrealized = (cur_price - held.avg_cost) * held.shares;
             unrealized_pnl += position_unrealized;
