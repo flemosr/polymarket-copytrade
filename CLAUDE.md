@@ -16,8 +16,8 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 
 - **Language:** Rust
 - **CLI:** `clap`
-- **SDK:** `polymarket-client-sdk` v0.3 with `data` feature (rs-clob-client)
-- **Data sources:** REST polling (`data-api.polymarket.com`); RTDS WebSocket planned for Phase 5
+- **SDK:** `polymarket-client-sdk` v0.3 with `data` + `gamma` features
+- **Data sources:** REST polling (`data-api.polymarket.com`), gamma API for exit pricing (`gamma-api.polymarket.com`); RTDS WebSocket planned for Phase 5
 - **Output:** JSON events to stdout, tracing logs to stderr
 - **Config:** CLI args + `.env` file (`POLL_INTERVAL_SECS`, `RUST_LOG`)
 
@@ -26,7 +26,7 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 | Module | Purpose |
 |--------|---------|
 | `src/types.rs` | Domain types (`MarketPosition`, `TargetAllocation`, `SimulatedOrder`, `HeldPosition`, `CopytradeEvent`, `ExitSummary`) |
-| `src/api.rs` | Paginated SDK wrappers (`fetch_active_positions`, `fetch_recent_trades`) |
+| `src/api.rs` | SDK wrappers (`fetch_active_positions`, `fetch_recent_trades`, `fetch_gamma_prices`, `build_exit_price_map`) |
 | `src/engine.rs` | Portfolio math (`compute_weights`, `compute_target_state`, `compute_orders`) |
 | `src/state.rs` | `TradingState` — holdings, budget, P&L tracking |
 | `src/reporter.rs` | JSON output (event lines + pretty exit summary) |
@@ -52,11 +52,11 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 - [x] Trading state tracking (holdings, budget, spend)
 - [x] Structured reporting (JSON/table/log)
 - [x] Graceful shutdown (Ctrl+C)
-- [ ] Accurate exit pricing (unfiltered positions + gamma API fallback)
+- [x] Accurate exit pricing (gamma API fallback for exited/resolved positions)
 
 **Testing findings:** Tested 30 min against a crypto up/down bot (`0xe594...`). These bots trade in concentrated bursts at 15-min window boundaries — REST polling at 5s catches them reliably. 8 rebalancing events, 191 simulated orders, +$14.17 simulated P&L. Sells-before-buys rebalancing and partial fills confirmed correct.
 
-**Known gap — exit pricing (must fix before relying on P&L):** When the trader fully exits a position (voluntary sell or market settlement), it vanishes from the filtered positions response and falls out of the target set. The "trader exited" sell path (`engine.rs:129`) falls back to `avg_cost` as the exit price — this produces zero realized P&L on every exit and invalidates the simulation. The `avg_cost` fallback must be eliminated. Fix: (1) fetch unfiltered positions (drop the `cur_price` filter) to build a full price map covering settled/exited positions still in the API, (2) for any holdings not found, look up the market via gamma API (`gamma-api.polymarket.com`) to get the current or resolved price.
+**Exit pricing:** When a held position leaves the active target set (trader exits or market resolves), the engine looks up its current price via a two-layer map: (1) active positions from the data API, (2) gamma API (`gamma::Client`, `markets?clob_token_ids=<id>`) for any assets not found in layer 1. Gamma errors propagate — no silent fallbacks. Exit events are logged at INFO with reason (`resolved` for price 0/1, `trader exited` otherwise) and a short trader ID (last 6 chars of address).
 
 ### Phase 3: Live Execution
 - [ ] Account setup command
