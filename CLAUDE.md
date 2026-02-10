@@ -53,10 +53,11 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 - [x] Structured reporting (JSON/table/log)
 - [x] Graceful shutdown (Ctrl+C)
 - [x] Accurate exit pricing (gamma API fallback for exited/resolved positions)
+- [x] Dynamic budget: target sizing based on running capital (budget_remaining + holdings value)
 
 **Testing findings:** Tested 30 min against a crypto up/down bot (`0xe594...`). These bots trade in concentrated bursts at 15-min window boundaries — REST polling at 5s catches them reliably. 8 rebalancing events, 191 simulated orders, +$14.17 simulated P&L. Sells-before-buys rebalancing and partial fills confirmed correct.
 
-**Exit pricing:** When a held position leaves the active target set (trader exits or market resolves), the engine looks up its current price via a two-layer map: (1) active positions from the data API, (2) gamma API (`gamma::Client`, `markets?clob_token_ids=<id>`) for any assets not found in layer 1. Gamma errors propagate — no silent fallbacks. Exit events are logged at INFO with reason (`resolved` for price 0/1, `trader exited` otherwise) and a short trader ID (last 6 chars of address).
+**Exit pricing:** When a held position leaves the active target set (trader exits or market resolves), the engine looks up its current price via a two-layer map: (1) active positions from the data API, (2) gamma API (`gamma::Client`, `markets?clob_token_ids=<id>`) for any assets not found in layer 1. Gamma errors propagate — no silent fallbacks. Exit sells always execute regardless of proceeds (positions resolved at price 0 must still be removed from holdings). Exit events are logged at INFO with reason (`resolved` for price 0/1, `trader exited` otherwise) and a short trader ID (last 6 chars of address). Market resolutions typically lag 5-20 minutes behind the scheduled close time due to UMA oracle settlement.
 
 ### Phase 3: Live Execution
 - [ ] Account setup command
