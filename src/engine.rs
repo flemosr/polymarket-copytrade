@@ -48,17 +48,21 @@ pub fn compute_weights(positions: &[Position]) -> Vec<(MarketPosition, f64, f64)
 }
 
 /// Compute the target state (allocation per market) given weights and parameters.
+///
+/// `max_trade_pct` is the maximum fraction (0.0–1.0) of `budget` allocatable to
+/// any single market position.
 pub fn compute_target_state(
     weights: &[(MarketPosition, f64, f64)],
     budget: f64,
     copy_pct: f64,
-    max_trade_size: f64,
+    max_trade_pct: f64,
 ) -> Vec<TargetAllocation> {
+    let max_per_market = max_trade_pct * budget;
     weights
         .iter()
         .map(|(market, weight, cur_price)| {
             let raw_target = weight * budget * copy_pct;
-            let target_usd = raw_target.min(max_trade_size);
+            let target_usd = raw_target.min(max_per_market);
             let target_shares = if *cur_price > 0.0 {
                 target_usd / cur_price
             } else {

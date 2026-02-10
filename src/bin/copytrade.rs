@@ -36,7 +36,7 @@ struct Args {
     #[arg(long)]
     copy_percentage: f64,
 
-    /// Maximum trade size per position in USD
+    /// Maximum percentage of running budget per position (0-100)
     #[arg(long)]
     max_trade_size: f64,
 }
@@ -65,11 +65,12 @@ async fn main() -> Result<()> {
     if !(0.0..=100.0).contains(&args.copy_percentage) {
         anyhow::bail!("--copy-percentage must be between 0 and 100");
     }
-    if args.max_trade_size <= 0.0 {
-        anyhow::bail!("--max-trade-size must be positive");
+    if !(0.0..=100.0).contains(&args.max_trade_size) {
+        anyhow::bail!("--max-trade-size must be between 0 and 100");
     }
 
     let copy_pct = args.copy_percentage / 100.0;
+    let max_trade_pct = args.max_trade_size / 100.0;
     let trader_addr: Address = args
         .trader_address
         .parse()
@@ -82,8 +83,8 @@ async fn main() -> Result<()> {
         .unwrap_or(10);
 
     info!(
-        "Starting copytrade (dry-run) — trader={} budget={} copy%={} max_trade={}",
-        args.trader_address, args.budget, args.copy_percentage, args.max_trade_size
+        "Starting copytrade (dry-run) — trader={} budget={} copy%={} max_trade%={}",
+        args.trader_address, args.budget, args.copy_percentage, args.max_trade_size,
     );
 
     let data_client = Client::default();
@@ -103,7 +104,7 @@ async fn main() -> Result<()> {
                 let prices = build_price_map(&positions);
                 let running_budget = state.effective_capital(&prices);
                 let targets =
-                    compute_target_state(&weights, running_budget, copy_pct, args.max_trade_size);
+                    compute_target_state(&weights, running_budget, copy_pct, max_trade_pct);
                 let orders = compute_orders(
                     &targets,
                     &state,
@@ -163,7 +164,7 @@ async fn main() -> Result<()> {
                     &mut state,
                     &mut seen_hashes,
                     copy_pct,
-                    args.max_trade_size,
+                    max_trade_pct,
                 ).await {
                     warn!("Poll cycle error: {e}");
                 }
@@ -198,7 +199,7 @@ async fn poll_cycle(
     state: &mut TradingState,
     seen_hashes: &mut HashSet<String>,
     copy_pct: f64,
-    max_trade_size: f64,
+    max_trade_pct: f64,
 ) -> Result<()> {
     info!("Polling... (seen: {} hashes)", seen_hashes.len());
     let trades = fetch_recent_trades(client, addr, 50).await?;
@@ -223,7 +224,7 @@ async fn poll_cycle(
 
     let weights = compute_weights(&positions);
     let running_budget = state.effective_capital(&active_prices);
-    let targets = compute_target_state(&weights, running_budget, copy_pct, max_trade_size);
+    let targets = compute_target_state(&weights, running_budget, copy_pct, max_trade_pct);
 
     // Build price map with gamma fallback for held assets the trader exited
     let held_assets: Vec<String> = state.holdings.keys().cloned().collect();
