@@ -31,10 +31,13 @@ We chose **portfolio mirroring** because full alignment ensures our returns matc
 - [Polymarket Developer Quickstart](https://docs.polymarket.com/quickstart/overview)
 - [CLOB API Documentation](https://docs.polymarket.com/developers/CLOB/introduction)
 - [CLOB WebSocket Overview](https://docs.polymarket.com/developers/CLOB/websocket/wss-overview)
-- [RTDS Overview](https://docs.polymarket.com/developers/RTDS/RTDS-overview)
+- [RTDS Overview](https://docs.polymarket.com/developers/RTDS/RTDS-overview) (incomplete — only 3 of 8 topics documented; see `EXPLORATION.md`)
+- [Proxy Wallet Documentation](https://docs.polymarket.com/developers/proxy-wallet)
 - [Get trades for a user or markets](https://docs.polymarket.com/api-reference/core/get-trades-for-a-user-or-markets)
 - [Get current positions for a user](https://docs.polymarket.com/api-reference/core/get-current-positions-for-a-user)
+- **Gamma API:** `gamma-api.polymarket.com` — market/event lookup by slug (Data API slug lookups return 404)
 - **Rust SDK:** [Polymarket/rs-clob-client](https://github.com/Polymarket/rs-clob-client) — `polymarket-client-sdk` on [crates.io](https://crates.io/crates/polymarket-client-sdk) / [docs.rs](https://docs.rs/polymarket-client-sdk)
+- **RTDS TypeScript SDK:** [Polymarket/real-time-data-client](https://github.com/Polymarket/real-time-data-client) — authoritative source for all 8 RTDS topics
 
 ---
 
@@ -68,20 +71,20 @@ Goals:
 Connect to `wss://ws-live-data.polymarket.com` and subscribe to `topic: "activity"`, `type: "trades"`.
 
 Goals:
--Confirm the RTDS activity/trades channel is accessible
--Test using the official SDK's `subscribe_raw("activity", "trades")` method
--Document the actual message shape and compare to REST response
--Determine if we can filter by `proxyWallet` server-side or must filter client-side
--Measure real-time latency (time from trade execution to WS message arrival)
+- Confirm the RTDS activity/trades channel is accessible
+- Document the correct subscription format and available topics
+- Document the actual message shape and compare to REST response
+- Determine if we can filter by `proxyWallet` server-side or must filter client-side
+- Measure real-time latency (time from trade execution to WS message arrival)
 
 ### 1D — CLOB WebSocket
 
-Explore the CLOB WS channels via the SDK (`ws` feature flag).
+Connect to `wss://ws-subscriptions-clob.polymarket.com/ws/market` and subscribe to an active market.
 
 Goals:
--Test `subscribe_last_trade_price` on the market channel — confirm it lacks user identity
--Test if there's any other channel that exposes trader identity for arbitrary users
--Document findings
+- Document the subscription format and available event types
+- Confirm whether market data includes trader identity (maker/taker/proxyWallet)
+- Document findings
 
 ### Exploration Deliverable
 
@@ -98,10 +101,10 @@ Results will be documented in `EXPLORATION.md` with:
 Based on exploration results, implement the core copytrading simulation:
 
 - Project scaffolding (Cargo workspace, dependencies, CLI with `clap`)
-- Portfolio snapshot — fetch trader's current positions via `/positions`, compute portfolio weights
+- Portfolio snapshot — fetch trader's current positions via `/positions`, compute portfolio weights. Exclude resolved markets (`curPrice == 1.0` or `curPrice == 0.0`) — these are settled positions with unredeemed shares, not active bets.
 - Target state computation — for each market the trader holds, compute `target = min(trader_weight × budget × copy_percentage, max_trade_size)`. This is deterministic and fully derived from the trader's current portfolio.
 - Initial replication — diff target state against our current holdings (initially empty), generate buy orders to align
-- Trade detection — real-time monitoring of the target trader's activity as a trigger to recompute
+- Trade detection — REST polling of `/trades?user=<addr>` with `transactionHash` dedup as a trigger to recompute
 - Rebalancing — on each detected trade, recompute target state from the trader's updated positions, diff against our current holdings, generate orders (buy or sell) to close the gap
 - Trading state — track our holdings, remaining budget, cumulative spend; skip orders when budget is exhausted
 - Structured reporting — per-trade log (detected trade, computed copytrade, running budget) + exit summary (total trades, total spend, P&L). Format as JSON, printed table, or log file.
@@ -153,7 +156,21 @@ Session state and copytrade records, enabling resume across restarts:
 
 ---
 
-## Phase 5: Multi-Account Copytrading
+## Phase 5: WebSocket Trade Detection (RTDS)
+
+Upgrade trade detection from REST polling to RTDS WebSocket for lower latency and better scalability with multiple traders:
+
+- Subscribe to RTDS `activity`/`trades` firehose (all platform trades in real-time)
+- Client-side filtering by `proxyWallet` to isolate target trader(s)
+- Watchdog/reconnect logic to handle the known ~20-minute silent stream death bug
+- Hybrid mode: RTDS as primary trigger, REST polling as fallback safety net
+- This becomes essential when monitoring many traders (REST polling doesn't scale)
+
+See `EXPLORATION.md` for RTDS findings, message format, and reliability notes.
+
+---
+
+## Phase 6: Multi-Account Copytrading
 
 - Support monitoring multiple trader addresses simultaneously
 - Per-trader budget and configuration
@@ -161,7 +178,7 @@ Session state and copytrade records, enabling resume across restarts:
 
 ---
 
-## Phase 6: Documentation and Final Tests
+## Phase 7: Documentation and Final Tests
 
 - README with setup/run instructions
 - Config examples (no real keys)
