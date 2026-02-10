@@ -21,7 +21,7 @@ We chose **portfolio mirroring** because full alignment ensures our returns matc
 ### Key Concepts
 
 - **copy-percentage** — proportion of our running capital allocated to replicating the target trader's portfolio. If the trader has 40% of their portfolio in market X, we allocate 40% of `running_budget × copy_percentage` to market X. This ensures proportional alignment with the trader's conviction across all positions. In multi-trader mode, each trader gets their own allocation percentage (must sum to ≤100%).
-- **max-trade-size** — hard cap on the amount allocated to any single market position (in USD). In our portfolio mirroring approach, each "trade" is a position adjustment to stay aligned with the target trader — max-trade-size caps the total size of that position, not individual orders.
+- **max-trade-size** — maximum percentage of running budget that can be allocated to any single market position (0–100). In our portfolio mirroring approach, each "trade" is a position adjustment to stay aligned with the target trader — max-trade-size caps the total size of that position as a fraction of effective capital, not a fixed dollar amount. This means the cap scales naturally with P&L: as running budget grows or shrinks, the per-market ceiling adjusts proportionally.
 - **budget** — initial capital allocated to copytrading. Sets the starting `budget_remaining`. The bot's effective capital (running budget) is `budget_remaining + holdings_market_value`, which floats with P&L — losses shrink position sizes, gains grow them. In live mode, budget also validates against the actual account balance at startup (error if balance < budget).
 
 ---
@@ -103,7 +103,7 @@ Based on exploration results, implement the core copytrading simulation. Uses `p
 
 - Project scaffolding (single crate, dependencies, CLI with `clap`)
 - Portfolio snapshot — fetch trader's current positions via SDK `client.positions()`, compute portfolio weights. Active position filter: `current_value > 0 && 0 < cur_price < 1` — this excludes resolved markets (price at 0 or 1), fully-exited positions (value = 0), and unredeemed settled shares.
-- Target state computation — for each market the trader holds, compute `target = min(trader_weight × running_budget × copy_percentage, max_trade_size)`. The running budget is `budget_remaining + holdings_market_value` — this is the bot's effective capital at that moment. Losses shrink it (reducing position sizes proportionally), gains grow it (allowing larger positions). The `--budget` CLI arg sets the initial capital; in live mode it also serves as a validation floor against the actual account balance.
+- Target state computation — for each market the trader holds, compute `target = min(trader_weight × running_budget × copy_percentage, max_trade_pct × running_budget)`. The running budget is `budget_remaining + holdings_market_value` — this is the bot's effective capital at that moment. Losses shrink it (reducing position sizes proportionally), gains grow it (allowing larger positions). The per-market cap (`max_trade_pct × running_budget`) scales with effective capital just like the weighted targets do. The `--budget` CLI arg sets the initial capital; in live mode it also serves as a validation floor against the actual account balance.
 - Initial replication — diff target state against our current holdings (initially empty), generate buy orders to align
 - Trade detection — REST polling via SDK `client.trades()` with `transaction_hash.to_string()` dedup (B256 → String in a HashSet) as a trigger to recompute
 - Rebalancing — on each detected trade, recompute target state from the trader's updated positions, diff against our current holdings. Process sells first (freeing budget), then buys (consuming budget). Buys are capped by available budget with partial fill support. Rebalancing orders below $0.01 are skipped, but exit sells always go through regardless of proceeds (to ensure cleanup of resolved-at-zero positions).
@@ -120,7 +120,7 @@ copytrade --dry-run \
   --trader-address <proxy-wallet-address> \
   --budget <usd-amount> \
   --copy-percentage <0-100> \
-  --max-trade-size <usd-amount>
+  --max-trade-size <0-100>
 ```
 
 ---
@@ -204,7 +204,7 @@ copytrade --live \
   --trader-address <proxy-wallet-address> \
   --budget <usd-amount> \
   --copy-percentage <0-100> \
-  --max-trade-size <usd-amount>
+  --max-trade-size <0-100>
 ```
 
 Environment: `POLYMARKET_PRIVATE_KEY` (hex), `POLYGON_RPC_URL` (for on-chain approvals only).

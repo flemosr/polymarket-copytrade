@@ -9,8 +9,8 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 ## Key Concepts
 
 - **copy-percentage** — fraction of budget allocated to replicating the trader's portfolio
-- **max-trade-size** — hard cap per market position (USD)
-- **budget** — total capital; sell proceeds flow back in
+- **max-trade-size** — max percentage of running budget per market position (0–100)
+- **budget** — initial capital; running budget is `budget_remaining + holdings value`, floats with P&L
 
 ## Architecture
 
@@ -96,7 +96,7 @@ cargo run --bin copytrade -- \
   --trader-address 0x<proxy_wallet> \
   --budget 1000 \
   --copy-percentage 50 \
-  --max-trade-size 200
+  --max-trade-size 30
 ```
 
 JSON events stream to stdout; logs to stderr. Ctrl+C triggers an exit summary.
