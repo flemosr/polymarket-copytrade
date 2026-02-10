@@ -1,3 +1,5 @@
 TASK.md
 .claude/sessions
 **/.DS_Store
+/target
+Cargo.lock
