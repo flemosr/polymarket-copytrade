@@ -35,6 +35,19 @@ impl TradingState {
         }
     }
 
+    /// Running budget: cash + current market value of all holdings.
+    pub fn effective_capital(&self, prices: &HashMap<String, f64>) -> f64 {
+        let holdings_value: f64 = self
+            .holdings
+            .iter()
+            .map(|(asset, held)| {
+                let price = prices.get(asset).copied().unwrap_or(held.avg_cost);
+                held.shares * price
+            })
+            .sum();
+        self.budget_remaining + holdings_value
+    }
+
     /// Apply a set of simulated orders to the trading state.
     pub fn apply_orders(&mut self, orders: &[SimulatedOrder]) {
         for order in orders {
@@ -111,6 +124,11 @@ impl TradingState {
         }
 
         let total_pnl = self.realized_pnl + unrealized_pnl;
+        let pnl_percent = if self.initial_budget > 0.0 {
+            (total_pnl / self.initial_budget) * 100.0
+        } else {
+            0.0
+        };
 
         ExitSummary {
             initial_budget: self.initial_budget,
@@ -120,6 +138,7 @@ impl TradingState {
             realized_pnl: self.realized_pnl,
             unrealized_pnl,
             total_pnl,
+            pnl_percent,
             total_events: self.total_events,
             total_orders: self.total_orders,
             total_buy_orders: self.total_buy_orders,

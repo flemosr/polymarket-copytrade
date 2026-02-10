@@ -100,8 +100,10 @@ async fn main() -> Result<()> {
             } else {
                 info!("Found {} active positions", positions.len());
                 let weights = compute_weights(&positions);
+                let prices = build_price_map(&positions);
+                let running_budget = state.effective_capital(&prices);
                 let targets =
-                    compute_target_state(&weights, args.budget, copy_pct, args.max_trade_size);
+                    compute_target_state(&weights, running_budget, copy_pct, args.max_trade_size);
                 let orders = compute_orders(
                     &targets,
                     &state,
@@ -160,7 +162,6 @@ async fn main() -> Result<()> {
                     trader_short_id,
                     &mut state,
                     &mut seen_hashes,
-                    args.budget,
                     copy_pct,
                     args.max_trade_size,
                 ).await {
@@ -196,7 +197,6 @@ async fn poll_cycle(
     trader_short_id: &str,
     state: &mut TradingState,
     seen_hashes: &mut HashSet<String>,
-    budget: f64,
     copy_pct: f64,
     max_trade_size: f64,
 ) -> Result<()> {
@@ -222,7 +222,8 @@ async fn poll_cycle(
     let active_prices = build_price_map(&positions);
 
     let weights = compute_weights(&positions);
-    let targets = compute_target_state(&weights, budget, copy_pct, max_trade_size);
+    let running_budget = state.effective_capital(&active_prices);
+    let targets = compute_target_state(&weights, running_budget, copy_pct, max_trade_size);
 
     // Build price map with gamma fallback for held assets the trader exited
     let held_assets: Vec<String> = state.holdings.keys().cloned().collect();

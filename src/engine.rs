@@ -156,22 +156,20 @@ pub fn compute_orders(
                 held.title, held.outcome
             );
             let proceeds = held.shares * price;
-            if proceeds >= MIN_ORDER_USD {
-                sells.push(SimulatedOrder {
-                    market: MarketPosition {
-                        condition_id: String::new(),
-                        asset: asset.clone(),
-                        title: held.title.clone(),
-                        outcome: held.outcome.clone(),
-                        outcome_index: 0,
-                        event_slug: String::new(),
-                    },
-                    side: OrderSide::Sell,
-                    shares: held.shares,
-                    price,
-                    cost_usd: proceeds,
-                });
-            }
+            sells.push(SimulatedOrder {
+                market: MarketPosition {
+                    condition_id: String::new(),
+                    asset: asset.clone(),
+                    title: held.title.clone(),
+                    outcome: held.outcome.clone(),
+                    outcome_index: 0,
+                    event_slug: String::new(),
+                },
+                side: OrderSide::Sell,
+                shares: held.shares,
+                price,
+                cost_usd: proceeds,
+            });
         }
     }
 

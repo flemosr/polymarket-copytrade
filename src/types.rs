@@ -90,6 +90,7 @@ pub struct ExitSummary {
     pub realized_pnl: f64,
     pub unrealized_pnl: f64,
     pub total_pnl: f64,
+    pub pnl_percent: f64,
     pub total_events: u64,
     pub total_orders: u64,
     pub total_buy_orders: u64,
