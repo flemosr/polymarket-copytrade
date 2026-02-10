@@ -3,3 +3,5 @@ TASK.md
 **/.DS_Store
 /target
 Cargo.lock
+.env
+/log
