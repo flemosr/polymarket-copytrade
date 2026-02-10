@@ -17,23 +17,23 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 - **Language:** Rust
 - **CLI:** `clap`
 - **SDK:** `polymarket-client-sdk` (rs-clob-client)
-- **Data sources:** REST polling (`data-api.polymarket.com`), RTDS WebSocket (`ws-live-data.polymarket.com`), CLOB WebSocket
+- **Data sources:** REST polling (`data-api.polymarket.com`); RTDS WebSocket planned for Phase 5
 
 ## Plan Progress
 
 ### Phase 1: Exploration
-- [ ] 1A — REST Polling (trades endpoint)
-- [ ] 1B — Positions Endpoint
-- [ ] 1C — WebSocket (RTDS)
-- [ ] 1D — CLOB WebSocket
-- [ ] Write EXPLORATION.md with findings
+- [x] 1A — REST Polling (trades endpoint)
+- [x] 1B — Positions Endpoint
+- [x] 1C — WebSocket (RTDS)
+- [x] 1D — CLOB WebSocket
+- [x] Write EXPLORATION.md with findings
 
 ### Phase 2: Core Dry-Run
 - [ ] Project scaffolding (Cargo workspace, deps, CLI)
 - [ ] Portfolio snapshot and weight computation
 - [ ] Target state computation
 - [ ] Initial replication (diff + buy orders)
-- [ ] Trade detection (real-time monitoring)
+- [ ] Trade detection (REST polling)
 - [ ] Rebalancing logic
 - [ ] Trading state tracking (holdings, budget, spend)
 - [ ] Structured reporting (JSON/table/log)
@@ -51,12 +51,18 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 - [ ] Copytrade decision records
 - [ ] User configuration storage
 
-### Phase 5: Multi-Account Copytrading
+### Phase 5: WebSocket Trade Detection (RTDS)
+- [ ] RTDS activity/trades subscription
+- [ ] Client-side proxyWallet filtering
+- [ ] Watchdog/reconnect for silent stream death (~20min bug)
+- [ ] Hybrid mode: RTDS primary + REST polling fallback
+
+### Phase 6: Multi-Account Copytrading
 - [ ] Multiple trader addresses
 - [ ] Per-trader budget/config
 - [ ] Aggregated reporting
 
-### Phase 6: Documentation and Final Tests
+### Phase 7: Documentation and Final Tests
 - [ ] README with setup/run instructions
 - [ ] Config examples
 - [ ] Final testing with real trader
