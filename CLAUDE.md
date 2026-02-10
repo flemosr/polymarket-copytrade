@@ -4,6 +4,8 @@
 
 Rust CLI bot that mirrors a target trader's Polymarket portfolio. Uses portfolio mirroring (not trade-by-trade copying) to proportionally replicate positions. Supports dry-run simulation and live execution via the CLOB API.
 
+See `PLAN.md` for the full implementation plan — consult it for detailed goals, design rationale, API endpoints, CLI targets, and phase-by-phase deliverables.
+
 ## Key Concepts
 
 - **copy-percentage** — fraction of budget allocated to replicating the trader's portfolio
