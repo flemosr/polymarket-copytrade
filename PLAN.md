@@ -38,6 +38,7 @@ We chose **portfolio mirroring** because full alignment ensures our returns matc
 - **Gamma API:** `gamma-api.polymarket.com` — market/event lookup by slug (Data API slug lookups return 404)
 - **Rust SDK:** [Polymarket/rs-clob-client](https://github.com/Polymarket/rs-clob-client) — `polymarket-client-sdk` on [crates.io](https://crates.io/crates/polymarket-client-sdk) / [docs.rs](https://docs.rs/polymarket-client-sdk)
 - **RTDS TypeScript SDK:** [Polymarket/real-time-data-client](https://github.com/Polymarket/real-time-data-client) — authoritative source for all 8 RTDS topics
+- **Leaderboard API:** `GET https://data-api.polymarket.com/v1/leaderboard?limit=15&orderBy=vol&timePeriod=day` — find active traders by volume
 
 ---
 
@@ -98,23 +99,23 @@ Results will be documented in `EXPLORATION.md` with:
 
 ## Phase 2: Core Dry-Run
 
-Based on exploration results, implement the core copytrading simulation:
+Based on exploration results, implement the core copytrading simulation. Uses `polymarket-client-sdk` with the `data` feature for typed REST access (positions, trades). Single crate layout (not a workspace).
 
-- Project scaffolding (Cargo workspace, dependencies, CLI with `clap`)
-- Portfolio snapshot — fetch trader's current positions via `/positions`, compute portfolio weights. Exclude resolved markets (`curPrice == 1.0` or `curPrice == 0.0`) — these are settled positions with unredeemed shares, not active bets.
-- Target state computation — for each market the trader holds, compute `target = min(trader_weight × budget × copy_percentage, max_trade_size)`. This is deterministic and fully derived from the trader's current portfolio.
+- Project scaffolding (single crate, dependencies, CLI with `clap`)
+- Portfolio snapshot — fetch trader's current positions via SDK `client.positions()`, compute portfolio weights. Active position filter: `current_value > 0 && 0 < cur_price < 1` — this excludes resolved markets (price at 0 or 1), fully-exited positions (value = 0), and unredeemed settled shares.
+- Target state computation — for each market the trader holds, compute `target = min(trader_weight × budget × copy_percentage, max_trade_size)`. Targets always use the full original budget, not the remaining budget — this ensures proportional alignment even after spending.
 - Initial replication — diff target state against our current holdings (initially empty), generate buy orders to align
-- Trade detection — REST polling of `/trades?user=<addr>` with `transactionHash` dedup as a trigger to recompute
-- Rebalancing — on each detected trade, recompute target state from the trader's updated positions, diff against our current holdings, generate orders (buy or sell) to close the gap
-- Trading state — track our holdings, remaining budget, cumulative spend; skip orders when budget is exhausted
-- Structured reporting — per-trade log (detected trade, computed copytrade, running budget) + exit summary (total trades, total spend, P&L). Format as JSON, printed table, or log file.
-- Graceful shutdown on Ctrl+C
+- Trade detection — REST polling via SDK `client.trades()` with `transaction_hash.to_string()` dedup (B256 → String in a HashSet) as a trigger to recompute
+- Rebalancing — on each detected trade, recompute target state from the trader's updated positions, diff against our current holdings. Process sells first (freeing budget), then buys (consuming budget). Buys are capped by available budget with partial fill support. Orders below $0.01 are skipped.
+- Trading state — track holdings, remaining budget, cumulative spend, realized P&L; sell proceeds flow back into budget
+- Structured reporting — JSON event lines to stdout (one per rebalancing cycle) + exit summary (pretty JSON with holdings, P&L, totals). Tracing logs to stderr. Configurable via `POLL_INTERVAL_SECS` env var (default 10s, set in `.env`).
+- Graceful shutdown on Ctrl+C — fetches latest prices and reports exit summary with unrealized P&L
 
 ### CLI Target
 
 ```bash
 copytrade --dry-run \
-  --trader-address <polygon-address> \
+  --trader-address <proxy-wallet-address> \
   --budget <usd-amount> \
   --copy-percentage <0-100> \
   --max-trade-size <usd-amount>
@@ -124,10 +125,10 @@ copytrade --dry-run \
 
 ## Phase 3: Live Execution
 
-Extend the bot to execute real trades via the CLOB API:
+Extend the bot to execute real trades via the CLOB API. Phase 2 already uses the SDK's `data` feature for read-only access; Phase 3 adds the `clob` feature for authenticated order placement (signing, API keys, order execution).
 
 - Account setup command (private key, API credential derivation)
-- Order execution via `polymarket-client-sdk`
+- Order execution via `polymarket-client-sdk` CLOB client
 - Order status tracking and logging
 - Retry with exponential backoff for order placement and API calls
 
@@ -158,7 +159,9 @@ Session state and copytrade records, enabling resume across restarts:
 
 ## Phase 5: WebSocket Trade Detection (RTDS)
 
-Upgrade trade detection from REST polling to RTDS WebSocket for lower latency and better scalability with multiple traders:
+Upgrade trade detection from REST polling to RTDS WebSocket for lower latency and better scalability with multiple traders.
+
+Phase 2 testing showed REST polling at 5s intervals is already effective for bursty traders (crypto bots trade in concentrated bursts at 15-min boundaries). WebSocket is primarily valuable for: (a) latency-sensitive copying of human traders who make sporadic single trades, and (b) scaling to many traders without proportional API load.
 
 - Subscribe to RTDS `activity`/`trades` firehose (all platform trades in real-time)
 - Client-side filtering by `proxyWallet` to isolate target trader(s)
