@@ -18,6 +18,14 @@ We evaluated two approaches:
 
 We chose **portfolio mirroring** because full alignment ensures our returns match the trader's returns (proportionally) from the moment we start copying — this is the actual goal of copytrading. Trade-by-trade is initially simpler for buy-only, but portfolio mirroring is more suitable when considering the full feature set (buys + sells + position tracking).
 
+**Stateless design — no persistent storage**
+
+The bot is stateless by design: on startup it seeds holdings from the Safe wallet's actual positions via the data API, and deduplicates trades via transaction hashes from the REST endpoint. There is no local database or trade history file.
+
+This is intentional. The Polymarket API is the source of truth for positions, balances, and trade history — duplicating that locally would introduce staleness and consistency problems (manual trades, market resolutions while offline, schema migrations). API-seeded restart is simpler, more correct, and eliminates an entire class of bugs. Trade history remains available via the data API for auditing.
+
+Configuration (private key, poll interval, and future per-trader settings for multi-account mode) lives in `config.toml` — the only file that persists across runs.
+
 ### Key Concepts
 
 - **copy-percentage** — proportion of our running capital allocated to replicating the target trader's portfolio. If the trader has 40% of their portfolio in market X, we allocate 40% of `running_budget × copy_percentage` to market X. This ensures proportional alignment with the trader's conviction across all positions. In multi-trader mode, each trader gets their own allocation percentage (must sum to ≤100%).
