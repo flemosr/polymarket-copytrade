@@ -1,0 +1,14 @@
+# Polymarket Copytrade Bot — Configuration
+#
+# 1. Copy this file to config.toml:  cp config.toml.template config.toml
+# 2. Run setup-account to validate and save your private key:
+#    cargo run --bin setup-account
+#    (prompts interactively with hidden input — keeps key out of shell history)
+
+[account]
+# Populated by setup-account — do not edit manually
+private_key = ""
+
+[settings]
+# Polling interval in seconds for trade detection (default: 10)
+poll_interval_secs = 10

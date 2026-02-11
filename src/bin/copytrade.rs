@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -12,6 +13,7 @@ use tracing::{info, warn};
 use polymarket_copytrade::api::{
     build_exit_price_map, fetch_active_positions, fetch_recent_trades,
 };
+use polymarket_copytrade::config::{AppConfig, CONFIG_PATH};
 use polymarket_copytrade::engine::{compute_orders, compute_target_state, compute_weights};
 use polymarket_copytrade::reporter;
 use polymarket_copytrade::state::TradingState;
@@ -43,8 +45,6 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenvy::dotenv().ok();
-
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -69,6 +69,11 @@ async fn main() -> Result<()> {
         anyhow::bail!("--max-trade-size must be between 0 and 100");
     }
 
+    // Load config
+    let config_path = Path::new(CONFIG_PATH);
+    let config = AppConfig::load(config_path)?;
+    info!("Loaded config from {}", config_path.display());
+
     let copy_pct = args.copy_percentage / 100.0;
     let max_trade_pct = args.max_trade_size / 100.0;
     let trader_addr: Address = args
@@ -77,14 +82,12 @@ async fn main() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Invalid trader address: {e}"))?;
     let trader_short_id = &args.trader_address[args.trader_address.len().saturating_sub(6)..];
 
-    let poll_interval_secs: u64 = std::env::var("POLL_INTERVAL_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
+    let poll_interval_secs = config.settings.poll_interval_secs;
 
+    let mode = if args.dry_run { "dry-run" } else { "live" };
     info!(
-        "Starting copytrade (dry-run) — trader={} budget={} copy%={} max_trade%={}",
-        args.trader_address, args.budget, args.copy_percentage, args.max_trade_size,
+        "Starting copytrade ({mode}) — trader={} budget={} copy%={} max_trade%={} poll={}s",
+        args.trader_address, args.budget, args.copy_percentage, args.max_trade_size, poll_interval_secs,
     );
 
     let data_client = Client::default();
