@@ -31,7 +31,7 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 | `src/state.rs` | `TradingState` — holdings, budget, P&L tracking |
 | `src/reporter.rs` | JSON output (event lines + pretty exit summary) |
 | `src/bin/copytrade.rs` | Main binary — CLI, initial replication, polling loop, shutdown |
-| `src/bin/probe_*.rs` | Phase 1 exploration probes (unchanged) |
+| `src/bin/probe_*.rs` | Exploration probes (Phase 1 + Phase 3) |
 
 ## Plan Progress
 
@@ -60,10 +60,16 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 **Exit pricing:** When a held position leaves the active target set (trader exits or market resolves), the engine looks up its current price via a two-layer map: (1) active positions from the data API, (2) gamma API (`gamma::Client`, `markets?clob_token_ids=<id>`) for any assets not found in layer 1. Gamma errors propagate — no silent fallbacks. Exit sells always execute regardless of proceeds (positions resolved at price 0 must still be removed from holdings). Exit events are logged at INFO with reason (`resolved` for price 0/1, `trader exited` otherwise) and a short trader ID (last 6 chars of address). Market resolutions typically lag 5-20 minutes behind the scheduled close time due to UMA oracle settlement.
 
 ### Phase 3: Live Execution
-- [ ] Account setup command
-- [ ] Order execution via SDK
-- [ ] Order status tracking
+- [x] CLOB auth & order probe (`probe_clob_trade`, `probe_my_positions`)
+- [x] Engine: $1 minimum for buys, no minimum for sells (`MIN_ORDER_USD`)
+- [ ] Auth module integration
+- [ ] Order executor (`SimulatedOrder` → CLOB limit order pipeline)
+- [ ] Order status tracking (partial fills)
 - [ ] Retry with exponential backoff
+- [ ] `--live` mode in main binary
+- [ ] Balance guard
+
+**CLOB probe findings:** GnosisSafe (type 2) auth works with `Config::builder().use_server_time(true)` to avoid clock drift. Key import paths: `polymarket_client_sdk::auth::{LocalSigner, Signer}`, `clob::{Client, Config}`, `clob::types::{SignatureType, Side, Amount, OrderType}`. Minimum order size is $1 notional (size * price >= $1.00) for buys only — sells (closing positions) have no minimum and work below $1. Balance is returned in raw USDC units (6 decimals, e.g. `5000000` = $5). Limit orders at unfillable prices ($0.01) can be placed and cancelled without funds. Market orders use `Amount::usdc(dec!(2.00))?` with `OrderType::FAK`. Safe address derived via `derive_safe_wallet(eoa, POLYGON)`. Tested end-to-end: placed a $2 FAK market buy on Brazil presidential election (Lula Yes), received 3.85 shares at ~$0.52, position confirmed via both data API and SDK `data::Client::positions()`. Companion probe `probe_my_positions` fetches the Safe wallet's positions using the typed SDK data client.
 
 ### Phase 4: Persistent Storage
 - [ ] Transaction dedup on restart
