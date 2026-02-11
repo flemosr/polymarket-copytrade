@@ -7,8 +7,8 @@ use tracing::{info, warn};
 use crate::state::TradingState;
 use crate::types::{MarketPosition, OrderSide, SimulatedOrder, TargetAllocation};
 
-/// Minimum order value in USD — skip orders below this threshold.
-const MIN_ORDER_USD: f64 = 0.01;
+/// Minimum order value in USD — Polymarket CLOB rejects orders below $1 notional.
+const MIN_ORDER_USD: f64 = 1.00;
 
 /// Extract a `MarketPosition` from an SDK `Position`.
 fn extract_market(pos: &Position) -> MarketPosition {
@@ -110,7 +110,7 @@ pub fn compute_orders(
         let diff = target.target_shares - held_shares;
 
         if diff > 0.0 {
-            // Need to buy more
+            // Need to buy more — subject to $1 minimum notional
             let cost = diff * target.cur_price;
             if cost >= MIN_ORDER_USD {
                 buys.push(SimulatedOrder {
@@ -122,18 +122,16 @@ pub fn compute_orders(
                 });
             }
         } else if diff < 0.0 {
-            // Need to sell some
+            // Need to sell some — no minimum for sells (CLOB allows closing below $1)
             let sell_shares = -diff;
             let proceeds = sell_shares * target.cur_price;
-            if proceeds >= MIN_ORDER_USD {
-                sells.push(SimulatedOrder {
-                    market: target.market.clone(),
-                    side: OrderSide::Sell,
-                    shares: sell_shares,
-                    price: target.cur_price,
-                    cost_usd: proceeds,
-                });
-            }
+            sells.push(SimulatedOrder {
+                market: target.market.clone(),
+                side: OrderSide::Sell,
+                shares: sell_shares,
+                price: target.cur_price,
+                cost_usd: proceeds,
+            });
         }
     }
 
