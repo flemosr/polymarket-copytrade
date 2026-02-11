@@ -22,6 +22,8 @@ execution via the Polymarket CLOB API.
 - **max-trade-size** — maximum percentage of running capital in any single market position (0-100%)
 - **budget** — initial capital; running budget floats with P&L as `budget_remaining + holdings_value`
 
+For detailed design rationale, architecture decisions, and planned next steps, see [PLAN.md](PLAN.md).
+
 ## Prerequisites
 
 - **Rust 1.88+** (2024 edition)
