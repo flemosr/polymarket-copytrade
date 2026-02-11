@@ -87,11 +87,12 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 
 **CLOB probe findings:** GnosisSafe (type 2) auth works with `Config::builder().use_server_time(true)` to avoid clock drift. Key import paths: `polymarket_client_sdk::auth::{LocalSigner, Signer}`, `clob::{Client, Config}`, `clob::types::{SignatureType, Side, Amount, OrderType}`. Minimum order size is $1 notional (size * price >= $1.00) for buys only — sells (closing positions) have no minimum and work below $1. Balance is returned in raw USDC units (6 decimals, e.g. `5000000` = $5). Limit orders at unfillable prices ($0.01) can be placed and cancelled without funds. Market orders use `Amount::usdc(dec!(2.00))?` with `OrderType::FAK`. Safe address derived via `derive_safe_wallet(eoa, POLYGON)`. Tested end-to-end: placed a $2 FAK market buy on Brazil presidential election (Lula Yes), received 3.85 shares at ~$0.52, position confirmed via both data API and SDK `data::Client::positions()`. Companion probe `probe_my_positions` fetches the Safe wallet's positions using the typed SDK data client.
 
-### Phase 4: Persistent Storage
-- [ ] Transaction dedup on restart
-- [ ] Budget/spend persistence
-- [ ] Copytrade decision records
-- [ ] User configuration storage
+### Phase 4: Tests and Documentation
+- [ ] Unit tests for engine math
+- [ ] Integration tests for state tracking
+- [ ] README with setup/run instructions
+- [ ] Config examples
+- [ ] Final testing with real trader
 
 ### Phase 5: WebSocket Trade Detection (RTDS)
 - [ ] RTDS activity/trades subscription
@@ -101,13 +102,9 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 
 ### Phase 6: Multi-Account Copytrading
 - [ ] Multiple trader addresses
-- [ ] Per-trader budget/config
+- [ ] Per-trader budget/config in `config.toml`
 - [ ] Aggregated reporting
-
-### Phase 7: Documentation and Final Tests
-- [ ] README with setup/run instructions
-- [ ] Config examples
-- [ ] Final testing with real trader
+- [ ] Update docs for multi-account usage
 
 ## Running
 

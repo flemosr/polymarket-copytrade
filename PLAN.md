@@ -239,14 +239,13 @@ copytrade --live --trader-address <addr> --budget 1000 --copy-percentage 50 --ma
 
 ---
 
-## Phase 4: Persistent Storage
+## Phase 4: Tests and Documentation
 
-Session state and copytrade records, enabling resume across restarts:
-
-- Processed transaction hashes (deduplication on restart)
-- Remaining budget and cumulative spend
-- Copytrade decisions (computed size, cost, skip reason, order status)
-- User configuration (trader addresses, budget, percentages)
+- Unit tests for engine math (`compute_weights`, `compute_target_state`, `compute_orders`)
+- Integration tests for state tracking (holdings seeding, resting order lifecycle, budget accounting)
+- README with setup/run instructions
+- Config examples (no real keys)
+- Final testing with a real active trader
 
 ---
 
@@ -269,13 +268,6 @@ See `EXPLORATION.md` for RTDS findings, message format, and reliability notes.
 ## Phase 6: Multi-Account Copytrading
 
 - Support monitoring multiple trader addresses simultaneously
-- Per-trader budget and configuration
+- Per-trader budget and configuration stored in `config.toml` (no separate persistent storage needed — API state is re-fetched on startup)
 - Aggregated reporting across all tracked traders
-
----
-
-## Phase 7: Documentation and Final Tests
-
-- README with setup/run instructions
-- Config examples (no real keys)
-- Final testing with a real active trader
+- Update README and docs for multi-account usage
