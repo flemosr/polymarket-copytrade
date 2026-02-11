@@ -16,8 +16,8 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 
 - **Language:** Rust
 - **CLI:** `clap`
-- **SDK:** `polymarket-client-sdk` v0.3 with `data` + `gamma` features
-- **Data sources:** REST polling (`data-api.polymarket.com`), gamma API for exit pricing (`gamma-api.polymarket.com`); RTDS WebSocket planned for Phase 5
+- **SDK:** `polymarket-client-sdk` v0.3 with `data` + `gamma` features; CLOB client (always available, no feature flag); `k256` for `PrivateKeySigner` type
+- **Data sources:** REST polling (`data-api.polymarket.com`), gamma API for exit pricing (`gamma-api.polymarket.com`), CLOB API for live order execution (`clob.polymarket.com`); RTDS WebSocket planned for Phase 5
 - **Output:** JSON events to stdout, tracing logs to stderr
 - **Config:** `config.toml` (TOML) for private key + poll interval; copytrade params via CLI args; `RUST_LOG` via env
 
@@ -26,10 +26,12 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 | Module | Purpose |
 |--------|---------|
 | `src/config.rs` | Config loading/saving (`AppConfig`, `AccountConfig`, `SettingsConfig`) |
-| `src/types.rs` | Domain types (`MarketPosition`, `TargetAllocation`, `SimulatedOrder`, `HeldPosition`, `CopytradeEvent`, `ExitSummary`) |
+| `src/types.rs` | Domain types (`MarketPosition`, `TargetAllocation`, `SimulatedOrder`, `HeldPosition`, `RestingOrder`, `CopytradeEvent`, `ExitSummary`, `ExecutionResult`, `ExecutionStatus`) |
 | `src/api.rs` | SDK wrappers (`fetch_active_positions`, `fetch_recent_trades`, `fetch_gamma_prices`, `build_exit_price_map`) |
 | `src/engine.rs` | Portfolio math (`compute_weights`, `compute_target_state`, `compute_orders`) |
-| `src/state.rs` | `TradingState` — holdings, budget, P&L tracking |
+| `src/state.rs` | `TradingState` — holdings, budget, P&L tracking, resting order tracking, `effective_held_shares()` |
+| `src/auth.rs` | CLOB authentication (`ClobContext`, `authenticate()`) |
+| `src/executor.rs` | Live order execution (`execute_orders`, `check_resting_orders`, retry, balance guard) |
 | `src/reporter.rs` | JSON output (event lines + pretty exit summary) |
 | `src/bin/copytrade.rs` | Main binary — CLI, initial replication, polling loop, shutdown |
 | `src/bin/setup_account.rs` | First-time setup — validate auth, print account info, update private key in `config.toml` |
@@ -66,12 +68,22 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 - [x] 3A — Engine: $1 minimum for buys, no minimum for sells (`MIN_ORDER_USD`)
 - [x] 3B — Config file (`config.toml`, TOML format) replacing `.env` for all settings
 - [x] 3B — `setup-account` binary (validate auth, print addresses + balance, update config; hidden interactive input via `rpassword`)
-- [ ] 3C — Auth module integration
-- [ ] 3C — Order executor (`SimulatedOrder` → CLOB limit order pipeline)
-- [ ] 3C — Order status tracking (partial fills)
-- [ ] 3C — Retry with exponential backoff
-- [ ] 3C — `--live` mode in main binary
-- [ ] 3C — Balance guard
+- [x] 3C — Auth module integration (`src/auth.rs` — `ClobContext`, `authenticate()`)
+- [x] 3C — Order executor (`src/executor.rs` — `execute_orders()`, GTC limit orders)
+- [x] 3C — Order status tracking (partial fills, resting, failed, skipped)
+- [x] 3C — Resting order tracking (`RestingOrder` in `TradingState`, re-checked each poll cycle)
+- [x] 3C — Retry with exponential backoff (rebuild+re-sign on each retry, 500ms/1s/2s)
+- [x] 3C — `--live` mode in main binary (`--live` flag, conflicts with `--dry-run`)
+- [x] 3C — Holdings seeding from Safe wallet on restart (fetches actual positions, prevents duplicate orders)
+- [x] 3C — Balance guard (bail at startup if cash + holdings < budget; skip all buys mid-run if < $1 USDC)
+- [x] 3C — Cancel stale resting orders on startup (`cancel_all_orders`) and on shutdown (`cancel_orders` for tracked resting orders, resolve state)
+- [x] 3C — PartialFill remainder tracking (when an order partially fills, track the unfilled remainder as a resting order to prevent duplicate orders)
+
+**Holdings seeding design:** On live startup, fetches ALL active positions from the Safe wallet (not just trader-related ones). This is intentional — the bot manages the full account and rebalances toward the target trader's portfolio, selling any positions the trader doesn't hold.
+
+**Resting order design:** When an order rests on the CLOB book (not filled within 2s), it is tracked in `TradingState::resting_orders`. Budget is reserved immediately for resting buys. `effective_held_shares(asset)` returns `holdings + resting_buys - resting_sells` — the engine uses this to avoid duplicate orders. `effective_capital()` includes resting buy value at current market price. Each poll cycle calls `executor::check_resting_orders()` which queries `client.order(&id)` for each tracked order: filled → moves to holdings, cancelled → returns budget, still resting → no change.
+
+**3C testing findings:** Dry-run regression confirmed: `execution_results` field correctly omitted from JSON via `skip_serializing_if`. Live smoke test: auth works, balance correctly converted from raw USDC (÷1,000,000), startup guard bails with clear message when balance < budget. Tested with gmpm trader (`0x14964...`, single Canada hockey position): $4 budget, 8.79 shares @ $0.45 placed as GTC limit order, filled on book. On restart: holdings seeded correctly from Safe wallet ($3.96 committed), engine saw existing shares and produced zero orders (no duplicate). Resting orders reserve budget and are tracked via `effective_held_shares()`; cancelled on shutdown.
 
 **CLOB probe findings:** GnosisSafe (type 2) auth works with `Config::builder().use_server_time(true)` to avoid clock drift. Key import paths: `polymarket_client_sdk::auth::{LocalSigner, Signer}`, `clob::{Client, Config}`, `clob::types::{SignatureType, Side, Amount, OrderType}`. Minimum order size is $1 notional (size * price >= $1.00) for buys only — sells (closing positions) have no minimum and work below $1. Balance is returned in raw USDC units (6 decimals, e.g. `5000000` = $5). Limit orders at unfillable prices ($0.01) can be placed and cancelled without funds. Market orders use `Amount::usdc(dec!(2.00))?` with `OrderType::FAK`. Safe address derived via `derive_safe_wallet(eoa, POLYGON)`. Tested end-to-end: placed a $2 FAK market buy on Brazil presidential election (Lula Yes), received 3.85 shares at ~$0.52, position confirmed via both data API and SDK `data::Client::positions()`. Companion probe `probe_my_positions` fetches the Safe wallet's positions using the typed SDK data client.
 

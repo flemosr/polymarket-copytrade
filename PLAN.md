@@ -213,12 +213,16 @@ SDK has no built-in retry. Wrap order submission with exponential backoff for tr
 
 ### 3C — Live Execution Integration
 
-- Auth module — `LocalSigner` creation, GnosisSafe `authentication_builder` flow
-- Order executor — `SimulatedOrder` → limit order build/sign/post pipeline
-- Order tracker — poll for fill status, handle partial fills, log outcomes
-- Retry wrapper — exponential backoff for `post_order` and API calls
-- `--live` mode in main binary — same polling loop as dry-run but with real order execution after `compute_orders`
-- Balance guard — check USDC balance before each order batch, skip if insufficient
+- Auth module (`src/auth.rs`) — `ClobContext` struct holds authenticated `Client`, `PrivateKeySigner`, EOA, and Safe addresses; `authenticate()` uses GnosisSafe signature type with `use_server_time(true)` to avoid clock drift; `PrivateKeySigner` type alias wraps `LocalSigner<k256::ecdsa::SigningKey>` (added `k256` crate dependency)
+- Order executor (`src/executor.rs`) — `execute_orders()` processes orders sequentially (sells first, then buys, matching engine output order); places GTC limit orders at the engine's computed price; 200ms delay between orders to avoid rate limits; 2s delay before checking fill status via `client.order()`
+- Execution types (`src/types.rs`) — `ExecutionStatus` enum (`Filled`/`PartialFill`/`Resting`/`Failed`/`Skipped`), `ExecutionResult` struct with fill data; `CopytradeEvent` gains `execution_results: Option<Vec<ExecutionResult>>` with `skip_serializing_if` for dry-run backward compatibility
+- Retry — exponential backoff (500ms/1s/2s, max 3 attempts) for transient errors (429/5xx/timeout/connection); rebuilds and re-signs on each attempt because `SignedOrder` does not impl `Clone`
+- State integration (`src/state.rs`) — `apply_execution_results()` maps `ExecutionResult` fill data back to `SimulatedOrder` format and delegates to existing `apply_orders()`; Filled/PartialFill update holdings immediately; PartialFill also tracks the unfilled remainder as a `RestingOrder` to prevent duplicate orders; Resting orders tracked in `TradingState::resting_orders` with budget reserved for buys; Failed/Skipped are no-ops
+- Resting order tracking — `RestingOrder` struct tracked in state; `effective_held_shares(asset)` returns `holdings + resting_buys - resting_sells` so the engine avoids duplicate orders; `effective_capital()` includes resting buy value at current market price; `executor::check_resting_orders()` queries CLOB each poll cycle (filled → moves to holdings, cancelled → returns budget, still resting → no change)
+- Holdings seeding on restart — in live mode, fetches ALL active positions from the Safe wallet via data API and seeds `TradingState::holdings`; intentionally includes non-trader positions so the bot manages the full account toward the target trader's portfolio; prevents duplicate orders after restart without needing persistent storage
+- `--live` mode in main binary — `--live` flag (conflicts with `--dry-run`, must specify exactly one); authenticates at startup, seeds holdings, checks balance; both initial replication and `poll_cycle` branch on `Option<&ClobContext>` for live vs dry-run execution
+- Balance guard — startup: bails if `cash + holdings_value < budget` (holdings valued at current market price from data API, not avg_cost); per-batch: single `balance_allowance` API call before first buy, skips all buys if balance < $1 USDC; optimistic fill assumption if status check fails after successful post
+- Resting order cleanup — startup: `cancel_all_orders()` wipes any stale orders from previous runs before seeding holdings; shutdown: `cancel_orders()` cancels tracked resting orders, `resolve_resting_cancel()` returns reserved budget, then exit summary computed on clean state
 
 ### CLI Target
 
