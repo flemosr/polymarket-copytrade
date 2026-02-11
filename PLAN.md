@@ -207,7 +207,8 @@ SDK has no built-in retry. Wrap order submission with exponential backoff for tr
 - Add `toml` dependency
 - Config struct (`AppConfig`) with serde deserialization — private key, poll interval, copytrade params
 - `config.toml.template` checked in, `config.toml` gitignored
-- `setup-account` binary — validate auth, print addresses + balance, write `config.toml`
+- `setup-account` binary — validate auth, print addresses + balance, update private key in `config.toml`
+- Interactive private key input via `rpassword` (hidden echo) by default; `--private-key` flag for scripted/CI use only
 - Migrate main binary to read private key + poll interval from `config.toml`; copytrade params stay as CLI args
 
 ### 3C — Live Execution Integration

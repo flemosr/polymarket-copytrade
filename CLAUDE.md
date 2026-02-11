@@ -25,12 +25,14 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 
 | Module | Purpose |
 |--------|---------|
+| `src/config.rs` | Config loading/saving (`AppConfig`, `AccountConfig`, `SettingsConfig`) |
 | `src/types.rs` | Domain types (`MarketPosition`, `TargetAllocation`, `SimulatedOrder`, `HeldPosition`, `CopytradeEvent`, `ExitSummary`) |
 | `src/api.rs` | SDK wrappers (`fetch_active_positions`, `fetch_recent_trades`, `fetch_gamma_prices`, `build_exit_price_map`) |
 | `src/engine.rs` | Portfolio math (`compute_weights`, `compute_target_state`, `compute_orders`) |
 | `src/state.rs` | `TradingState` — holdings, budget, P&L tracking |
 | `src/reporter.rs` | JSON output (event lines + pretty exit summary) |
 | `src/bin/copytrade.rs` | Main binary — CLI, initial replication, polling loop, shutdown |
+| `src/bin/setup_account.rs` | First-time setup — validate auth, print account info, update private key in `config.toml` |
 | `src/bin/probe_*.rs` | Exploration probes (Phase 1 + Phase 3) |
 
 ## Plan Progress
@@ -62,8 +64,8 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 ### Phase 3: Live Execution
 - [x] 3A — CLOB auth & order probe (`probe_clob_trade`, `probe_my_positions`)
 - [x] 3A — Engine: $1 minimum for buys, no minimum for sells (`MIN_ORDER_USD`)
-- [ ] 3B — Config file (`config.toml`, TOML format) replacing `.env` for all settings
-- [ ] 3B — `setup-account` binary (validate auth, print addresses + balance, write config)
+- [x] 3B — Config file (`config.toml`, TOML format) replacing `.env` for all settings
+- [x] 3B — `setup-account` binary (validate auth, print addresses + balance, update config; hidden interactive input via `rpassword`)
 - [ ] 3C — Auth module integration
 - [ ] 3C — Order executor (`SimulatedOrder` → CLOB limit order pipeline)
 - [ ] 3C — Order status tracking (partial fills)
@@ -98,8 +100,9 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 ## Running
 
 ```bash
-# First-time setup (writes config.toml with private key)
-cargo run --bin setup-account -- --private-key <hex>
+# First-time setup (prompts for private key with hidden input)
+cp config.toml.template config.toml
+cargo run --bin setup-account
 
 # Dry-run (private key from config.toml, copytrade params as CLI args)
 cargo run --bin copytrade -- --dry-run \
