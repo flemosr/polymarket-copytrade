@@ -346,3 +346,658 @@ impl TradingState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::MarketPosition;
+
+    fn approx_eq(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-6
+    }
+
+    fn make_market(asset: &str) -> MarketPosition {
+        MarketPosition {
+            condition_id: String::new(),
+            asset: asset.to_string(),
+            title: String::new(),
+            outcome: String::new(),
+            outcome_index: 0,
+            event_slug: String::new(),
+        }
+    }
+
+    fn make_order(asset: &str, side: OrderSide, shares: f64, price: f64) -> SimulatedOrder {
+        SimulatedOrder {
+            market: make_market(asset),
+            side,
+            shares,
+            price,
+            cost_usd: shares * price,
+        }
+    }
+
+    fn make_resting(
+        order_id: &str,
+        asset: &str,
+        side: OrderSide,
+        shares: f64,
+        price: f64,
+    ) -> RestingOrder {
+        RestingOrder {
+            order_id: order_id.to_string(),
+            asset: asset.to_string(),
+            title: String::new(),
+            outcome: String::new(),
+            side,
+            shares,
+            price,
+            cost_usd: shares * price,
+        }
+    }
+
+    // ── Constructor ────────────────────────────────────────────────
+
+    #[test]
+    fn new_initializes_correctly() {
+        let s = TradingState::new(500.0);
+        assert!(approx_eq(s.initial_budget, 500.0));
+        assert!(approx_eq(s.budget_remaining, 500.0));
+        assert!(approx_eq(s.total_spent, 0.0));
+        assert!(approx_eq(s.total_sell_proceeds, 0.0));
+        assert!(approx_eq(s.realized_pnl, 0.0));
+        assert_eq!(s.total_events, 0);
+        assert_eq!(s.total_orders, 0);
+        assert!(s.holdings.is_empty());
+        assert!(s.resting_orders.is_empty());
+    }
+
+    // ── effective_capital ──────────────────────────────────────────
+
+    #[test]
+    fn effective_capital_empty() {
+        let s = TradingState::new(500.0);
+        let prices = HashMap::new();
+        assert!(approx_eq(s.effective_capital(&prices), 500.0));
+    }
+
+    #[test]
+    fn effective_capital_with_holdings() {
+        let mut s = TradingState::new(300.0);
+        s.holdings.insert(
+            "a1".to_string(),
+            HeldPosition {
+                asset: "a1".to_string(),
+                title: String::new(),
+                outcome: String::new(),
+                shares: 10.0,
+                total_cost: 5.0,
+                avg_cost: 0.50,
+            },
+        );
+        let mut prices = HashMap::new();
+        prices.insert("a1".to_string(), 0.60);
+        // 300 + 10*0.60 = 306
+        assert!(approx_eq(s.effective_capital(&prices), 306.0));
+    }
+
+    #[test]
+    fn effective_capital_with_resting_buys() {
+        let mut s = TradingState::new(300.0);
+        s.resting_orders
+            .push(make_resting("o1", "a1", OrderSide::Buy, 10.0, 0.50));
+        let mut prices = HashMap::new();
+        prices.insert("a1".to_string(), 0.60);
+        // 300 + 10*0.60 (resting buy value at market price) = 306
+        assert!(approx_eq(s.effective_capital(&prices), 306.0));
+    }
+
+    #[test]
+    fn effective_capital_missing_price_falls_back_to_avg_cost() {
+        let mut s = TradingState::new(300.0);
+        s.holdings.insert(
+            "a1".to_string(),
+            HeldPosition {
+                asset: "a1".to_string(),
+                title: String::new(),
+                outcome: String::new(),
+                shares: 10.0,
+                total_cost: 5.0,
+                avg_cost: 0.50,
+            },
+        );
+        // No price in map → falls back to avg_cost (0.50)
+        let prices = HashMap::new();
+        // 300 + 10*0.50 = 305
+        assert!(approx_eq(s.effective_capital(&prices), 305.0));
+    }
+
+    // ── effective_held_shares ──────────────────────────────────────
+
+    #[test]
+    fn effective_held_shares_no_holdings() {
+        let s = TradingState::new(500.0);
+        assert!(approx_eq(s.effective_held_shares("a1"), 0.0));
+    }
+
+    #[test]
+    fn effective_held_shares_holdings_only() {
+        let mut s = TradingState::new(500.0);
+        s.holdings.insert(
+            "a1".to_string(),
+            HeldPosition {
+                asset: "a1".to_string(),
+                title: String::new(),
+                outcome: String::new(),
+                shares: 10.0,
+                total_cost: 5.0,
+                avg_cost: 0.50,
+            },
+        );
+        assert!(approx_eq(s.effective_held_shares("a1"), 10.0));
+    }
+
+    #[test]
+    fn effective_held_shares_with_resting_buy() {
+        let mut s = TradingState::new(500.0);
+        s.holdings.insert(
+            "a1".to_string(),
+            HeldPosition {
+                asset: "a1".to_string(),
+                title: String::new(),
+                outcome: String::new(),
+                shares: 10.0,
+                total_cost: 5.0,
+                avg_cost: 0.50,
+            },
+        );
+        s.resting_orders
+            .push(make_resting("o1", "a1", OrderSide::Buy, 5.0, 0.50));
+        assert!(approx_eq(s.effective_held_shares("a1"), 15.0));
+    }
+
+    #[test]
+    fn effective_held_shares_with_resting_sell() {
+        let mut s = TradingState::new(500.0);
+        s.holdings.insert(
+            "a1".to_string(),
+            HeldPosition {
+                asset: "a1".to_string(),
+                title: String::new(),
+                outcome: String::new(),
+                shares: 10.0,
+                total_cost: 5.0,
+                avg_cost: 0.50,
+            },
+        );
+        s.resting_orders
+            .push(make_resting("o1", "a1", OrderSide::Sell, 3.0, 0.50));
+        assert!(approx_eq(s.effective_held_shares("a1"), 7.0));
+    }
+
+    #[test]
+    fn effective_held_shares_combined_buy_and_sell() {
+        let mut s = TradingState::new(500.0);
+        s.holdings.insert(
+            "a1".to_string(),
+            HeldPosition {
+                asset: "a1".to_string(),
+                title: String::new(),
+                outcome: String::new(),
+                shares: 10.0,
+                total_cost: 5.0,
+                avg_cost: 0.50,
+            },
+        );
+        s.resting_orders
+            .push(make_resting("o1", "a1", OrderSide::Buy, 5.0, 0.50));
+        s.resting_orders
+            .push(make_resting("o2", "a1", OrderSide::Sell, 3.0, 0.50));
+        // 10 + 5 - 3 = 12
+        assert!(approx_eq(s.effective_held_shares("a1"), 12.0));
+    }
+
+    // ── Resting Order Lifecycle ────────────────────────────────────
+
+    #[test]
+    fn resting_add_buy_reserves_budget() {
+        let mut s = TradingState::new(100.0);
+        s.add_resting_order(make_resting("o1", "a1", OrderSide::Buy, 10.0, 0.50));
+        assert!(approx_eq(s.budget_remaining, 95.0)); // 100 - 5
+        assert_eq!(s.resting_orders.len(), 1);
+    }
+
+    #[test]
+    fn resting_add_sell_no_budget_change() {
+        let mut s = TradingState::new(100.0);
+        s.add_resting_order(make_resting("o1", "a1", OrderSide::Sell, 10.0, 0.50));
+        assert!(approx_eq(s.budget_remaining, 100.0));
+        assert_eq!(s.resting_orders.len(), 1);
+    }
+
+    #[test]
+    fn resting_fill_buy() {
+        let mut s = TradingState::new(100.0);
+        s.add_resting_order(make_resting("o1", "a1", OrderSide::Buy, 10.0, 0.50));
+        assert!(approx_eq(s.budget_remaining, 95.0));
+
+        s.resolve_resting_fill("o1", 10.0, 0.50);
+        assert!(s.resting_orders.is_empty());
+        assert!(approx_eq(s.total_spent, 5.0));
+        assert_eq!(s.total_buy_orders, 1);
+        let held = s.holdings.get("a1").unwrap();
+        assert!(approx_eq(held.shares, 10.0));
+        assert!(approx_eq(held.avg_cost, 0.50));
+    }
+
+    #[test]
+    fn resting_fill_buy_price_diff() {
+        let mut s = TradingState::new(100.0);
+        // Reserved at $0.50 per share (cost_usd = 5.0)
+        s.add_resting_order(make_resting("o1", "a1", OrderSide::Buy, 10.0, 0.50));
+        assert!(approx_eq(s.budget_remaining, 95.0));
+
+        // Actually filled at $0.40 per share (cost = 4.0)
+        s.resolve_resting_fill("o1", 10.0, 0.40);
+        // Over-reservation of $1.0 returned
+        assert!(approx_eq(s.budget_remaining, 96.0)); // 95 + (5.0 - 4.0)
+        assert!(approx_eq(s.total_spent, 4.0));
+    }
+
+    #[test]
+    fn resting_fill_sell() {
+        let mut s = TradingState::new(100.0);
+        s.holdings.insert(
+            "a1".to_string(),
+            HeldPosition {
+                asset: "a1".to_string(),
+                title: String::new(),
+                outcome: String::new(),
+                shares: 10.0,
+                total_cost: 5.0,
+                avg_cost: 0.50,
+            },
+        );
+        s.add_resting_order(make_resting("o1", "a1", OrderSide::Sell, 10.0, 0.60));
+
+        s.resolve_resting_fill("o1", 10.0, 0.60);
+        assert!(approx_eq(s.budget_remaining, 106.0)); // 100 + 6.0 proceeds
+        assert!(approx_eq(s.total_sell_proceeds, 6.0));
+        assert!(approx_eq(s.realized_pnl, 1.0)); // (0.60 - 0.50) * 10
+        assert!(s.holdings.is_empty()); // fully sold
+    }
+
+    #[test]
+    fn resting_cancel_buy_refunds_budget() {
+        let mut s = TradingState::new(100.0);
+        s.add_resting_order(make_resting("o1", "a1", OrderSide::Buy, 10.0, 0.50));
+        assert!(approx_eq(s.budget_remaining, 95.0));
+
+        s.resolve_resting_cancel("o1");
+        assert!(approx_eq(s.budget_remaining, 100.0)); // refunded
+        assert!(s.resting_orders.is_empty());
+    }
+
+    #[test]
+    fn resting_cancel_sell_no_budget_change() {
+        let mut s = TradingState::new(100.0);
+        s.add_resting_order(make_resting("o1", "a1", OrderSide::Sell, 10.0, 0.50));
+
+        s.resolve_resting_cancel("o1");
+        assert!(approx_eq(s.budget_remaining, 100.0));
+        assert!(s.resting_orders.is_empty());
+    }
+
+    #[test]
+    fn resting_unknown_order_id_noop() {
+        let mut s = TradingState::new(100.0);
+        s.resolve_resting_fill("nonexistent", 10.0, 0.50);
+        s.resolve_resting_cancel("nonexistent");
+        assert!(approx_eq(s.budget_remaining, 100.0));
+        assert!(s.holdings.is_empty());
+    }
+
+    // ── apply_orders ───────────────────────────────────────────────
+
+    #[test]
+    fn apply_orders_buy() {
+        let mut s = TradingState::new(100.0);
+        let orders = vec![make_order("a1", OrderSide::Buy, 10.0, 0.50)];
+        s.apply_orders(&orders);
+
+        assert!(approx_eq(s.budget_remaining, 95.0));
+        assert!(approx_eq(s.total_spent, 5.0));
+        assert_eq!(s.total_buy_orders, 1);
+        assert_eq!(s.total_orders, 1);
+        let held = s.holdings.get("a1").unwrap();
+        assert!(approx_eq(held.shares, 10.0));
+        assert!(approx_eq(held.avg_cost, 0.50));
+    }
+
+    #[test]
+    fn apply_orders_sell() {
+        let mut s = TradingState::new(100.0);
+        // First buy to establish position
+        s.holdings.insert(
+            "a1".to_string(),
+            HeldPosition {
+                asset: "a1".to_string(),
+                title: String::new(),
+                outcome: String::new(),
+                shares: 10.0,
+                total_cost: 5.0,
+                avg_cost: 0.50,
+            },
+        );
+        let orders = vec![make_order("a1", OrderSide::Sell, 10.0, 0.60)];
+        s.apply_orders(&orders);
+
+        assert!(approx_eq(s.budget_remaining, 106.0)); // 100 + 6.0
+        assert!(approx_eq(s.total_sell_proceeds, 6.0));
+        assert!(approx_eq(s.realized_pnl, 1.0)); // (0.60 - 0.50) * 10
+        assert_eq!(s.total_sell_orders, 1);
+        assert!(s.holdings.is_empty()); // fully sold → removed
+    }
+
+    #[test]
+    fn apply_orders_full_sell_removes_position() {
+        let mut s = TradingState::new(100.0);
+        s.holdings.insert(
+            "a1".to_string(),
+            HeldPosition {
+                asset: "a1".to_string(),
+                title: String::new(),
+                outcome: String::new(),
+                shares: 5.0,
+                total_cost: 2.5,
+                avg_cost: 0.50,
+            },
+        );
+        s.apply_orders(&[make_order("a1", OrderSide::Sell, 5.0, 0.50)]);
+        assert!(s.holdings.get("a1").is_none());
+    }
+
+    #[test]
+    fn apply_orders_sell_funds_buy() {
+        let mut s = TradingState::new(0.0); // no cash
+        s.holdings.insert(
+            "a1".to_string(),
+            HeldPosition {
+                asset: "a1".to_string(),
+                title: String::new(),
+                outcome: String::new(),
+                shares: 10.0,
+                total_cost: 5.0,
+                avg_cost: 0.50,
+            },
+        );
+        let orders = vec![
+            make_order("a1", OrderSide::Sell, 10.0, 0.50),
+            make_order("a2", OrderSide::Buy, 10.0, 0.50),
+        ];
+        s.apply_orders(&orders);
+
+        assert!(approx_eq(s.budget_remaining, 0.0)); // sell proceeds funded buy
+        assert!(s.holdings.get("a1").is_none());
+        let held = s.holdings.get("a2").unwrap();
+        assert!(approx_eq(held.shares, 10.0));
+    }
+
+    #[test]
+    fn apply_orders_buy_updates_avg_cost() {
+        let mut s = TradingState::new(1000.0);
+        // Buy 10 at 0.40
+        s.apply_orders(&[make_order("a1", OrderSide::Buy, 10.0, 0.40)]);
+        // Buy 10 more at 0.60
+        s.apply_orders(&[make_order("a1", OrderSide::Buy, 10.0, 0.60)]);
+
+        let held = s.holdings.get("a1").unwrap();
+        assert!(approx_eq(held.shares, 20.0));
+        // avg_cost = (10*0.40 + 10*0.60) / 20 = 10 / 20 = 0.50
+        assert!(approx_eq(held.avg_cost, 0.50));
+    }
+
+    // ── apply_execution_results ────────────────────────────────────
+
+    #[test]
+    fn execution_filled() {
+        let mut s = TradingState::new(100.0);
+        let orders = vec![make_order("a1", OrderSide::Buy, 10.0, 0.50)];
+        let results = vec![ExecutionResult {
+            order_index: 0,
+            status: ExecutionStatus::Filled,
+            order_id: "oid1".to_string(),
+            filled_shares: 10.0,
+            filled_cost_usd: 5.0,
+            error_msg: None,
+        }];
+        s.apply_execution_results(&orders, &results);
+
+        assert!(approx_eq(s.budget_remaining, 95.0));
+        assert!(approx_eq(s.total_spent, 5.0));
+        let held = s.holdings.get("a1").unwrap();
+        assert!(approx_eq(held.shares, 10.0));
+        assert!(s.resting_orders.is_empty());
+    }
+
+    #[test]
+    fn execution_partial_fill() {
+        let mut s = TradingState::new(100.0);
+        let orders = vec![make_order("a1", OrderSide::Buy, 10.0, 0.50)];
+        let results = vec![ExecutionResult {
+            order_index: 0,
+            status: ExecutionStatus::PartialFill,
+            order_id: "oid1".to_string(),
+            filled_shares: 6.0,
+            filled_cost_usd: 3.0,
+            error_msg: None,
+        }];
+        s.apply_execution_results(&orders, &results);
+
+        // 6 shares filled immediately
+        let held = s.holdings.get("a1").unwrap();
+        assert!(approx_eq(held.shares, 6.0));
+        assert!(approx_eq(s.total_spent, 3.0));
+        // Remaining 4 shares tracked as resting
+        assert_eq!(s.resting_orders.len(), 1);
+        assert!(approx_eq(s.resting_orders[0].shares, 4.0));
+        assert_eq!(s.resting_orders[0].order_id, "oid1");
+        // Budget: 100 - 3.0 (filled) - 2.0 (resting 4*0.50) = 95.0
+        assert!(approx_eq(s.budget_remaining, 95.0));
+    }
+
+    #[test]
+    fn execution_resting() {
+        let mut s = TradingState::new(100.0);
+        let orders = vec![make_order("a1", OrderSide::Buy, 10.0, 0.50)];
+        let results = vec![ExecutionResult {
+            order_index: 0,
+            status: ExecutionStatus::Resting,
+            order_id: "oid1".to_string(),
+            filled_shares: 0.0,
+            filled_cost_usd: 0.0,
+            error_msg: None,
+        }];
+        s.apply_execution_results(&orders, &results);
+
+        assert!(s.holdings.is_empty()); // nothing filled
+        assert_eq!(s.resting_orders.len(), 1);
+        assert!(approx_eq(s.resting_orders[0].shares, 10.0));
+        // Budget reserved for resting buy
+        assert!(approx_eq(s.budget_remaining, 95.0));
+    }
+
+    #[test]
+    fn execution_failed() {
+        let mut s = TradingState::new(100.0);
+        let orders = vec![make_order("a1", OrderSide::Buy, 10.0, 0.50)];
+        let results = vec![ExecutionResult {
+            order_index: 0,
+            status: ExecutionStatus::Failed,
+            order_id: String::new(),
+            filled_shares: 0.0,
+            filled_cost_usd: 0.0,
+            error_msg: Some("insufficient balance".to_string()),
+        }];
+        s.apply_execution_results(&orders, &results);
+
+        assert!(approx_eq(s.budget_remaining, 100.0)); // no change
+        assert!(s.holdings.is_empty());
+        assert!(s.resting_orders.is_empty());
+    }
+
+    #[test]
+    fn execution_skipped() {
+        let mut s = TradingState::new(100.0);
+        let orders = vec![make_order("a1", OrderSide::Buy, 10.0, 0.50)];
+        let results = vec![ExecutionResult {
+            order_index: 0,
+            status: ExecutionStatus::Skipped,
+            order_id: String::new(),
+            filled_shares: 0.0,
+            filled_cost_usd: 0.0,
+            error_msg: None,
+        }];
+        s.apply_execution_results(&orders, &results);
+
+        assert!(approx_eq(s.budget_remaining, 100.0));
+        assert!(s.holdings.is_empty());
+        assert!(s.resting_orders.is_empty());
+    }
+
+    #[test]
+    fn execution_mixed_statuses() {
+        let mut s = TradingState::new(100.0);
+        let orders = vec![
+            make_order("a1", OrderSide::Buy, 10.0, 0.50),
+            make_order("a2", OrderSide::Buy, 8.0, 0.40),
+            make_order("a3", OrderSide::Buy, 5.0, 0.60),
+        ];
+        let results = vec![
+            ExecutionResult {
+                order_index: 0,
+                status: ExecutionStatus::Filled,
+                order_id: "o1".to_string(),
+                filled_shares: 10.0,
+                filled_cost_usd: 5.0,
+                error_msg: None,
+            },
+            ExecutionResult {
+                order_index: 1,
+                status: ExecutionStatus::Resting,
+                order_id: "o2".to_string(),
+                filled_shares: 0.0,
+                filled_cost_usd: 0.0,
+                error_msg: None,
+            },
+            ExecutionResult {
+                order_index: 2,
+                status: ExecutionStatus::Failed,
+                order_id: String::new(),
+                filled_shares: 0.0,
+                filled_cost_usd: 0.0,
+                error_msg: Some("error".to_string()),
+            },
+        ];
+        s.apply_execution_results(&orders, &results);
+
+        // a1: filled → in holdings
+        assert!(approx_eq(s.holdings.get("a1").unwrap().shares, 10.0));
+        // a2: resting → tracked, budget reserved
+        assert_eq!(s.resting_orders.len(), 1);
+        assert_eq!(s.resting_orders[0].asset, "a2");
+        // a3: failed → no effect
+        assert!(s.holdings.get("a3").is_none());
+        // Budget: 100 - 5.0 (a1 filled) - 3.2 (a2 resting: 8*0.40) = 91.8
+        assert!(approx_eq(s.budget_remaining, 91.8));
+    }
+
+    // ── exit_summary ───────────────────────────────────────────────
+
+    #[test]
+    fn exit_summary_basic() {
+        let mut s = TradingState::new(100.0);
+        s.budget_remaining = 90.0;
+        s.total_spent = 10.0;
+        s.holdings.insert(
+            "a1".to_string(),
+            HeldPosition {
+                asset: "a1".to_string(),
+                title: "Test".to_string(),
+                outcome: "Yes".to_string(),
+                shares: 20.0,
+                total_cost: 10.0,
+                avg_cost: 0.50,
+            },
+        );
+        let mut prices = HashMap::new();
+        prices.insert("a1".to_string(), 0.60);
+
+        let summary = s.exit_summary(&prices);
+        // unrealized = (0.60 - 0.50) * 20 = 2.0
+        assert!(approx_eq(summary.unrealized_pnl, 2.0));
+        assert!(approx_eq(summary.total_pnl, 2.0));
+        assert!(approx_eq(summary.pnl_percent, 2.0)); // 2/100 * 100
+        assert_eq!(summary.holdings.len(), 1);
+        assert!(approx_eq(summary.holdings[0].current_value, 12.0));
+    }
+
+    #[test]
+    fn exit_summary_with_realized_pnl() {
+        let mut s = TradingState::new(100.0);
+        s.realized_pnl = 5.0;
+        s.budget_remaining = 95.0;
+        s.holdings.insert(
+            "a1".to_string(),
+            HeldPosition {
+                asset: "a1".to_string(),
+                title: String::new(),
+                outcome: String::new(),
+                shares: 10.0,
+                total_cost: 5.0,
+                avg_cost: 0.50,
+            },
+        );
+        let mut prices = HashMap::new();
+        prices.insert("a1".to_string(), 0.70);
+
+        let summary = s.exit_summary(&prices);
+        // unrealized = (0.70 - 0.50) * 10 = 2.0
+        assert!(approx_eq(summary.unrealized_pnl, 2.0));
+        assert!(approx_eq(summary.realized_pnl, 5.0));
+        assert!(approx_eq(summary.total_pnl, 7.0)); // 5 + 2
+    }
+
+    #[test]
+    fn exit_summary_missing_price_falls_back_to_zero() {
+        let mut s = TradingState::new(100.0);
+        s.holdings.insert(
+            "a1".to_string(),
+            HeldPosition {
+                asset: "a1".to_string(),
+                title: String::new(),
+                outcome: String::new(),
+                shares: 10.0,
+                total_cost: 5.0,
+                avg_cost: 0.50,
+            },
+        );
+        let prices = HashMap::new(); // no price
+
+        let summary = s.exit_summary(&prices);
+        // Falls back to price 0 → unrealized = (0 - 0.50) * 10 = -5.0
+        assert!(approx_eq(summary.unrealized_pnl, -5.0));
+        assert!(approx_eq(summary.holdings[0].cur_price, 0.0));
+    }
+
+    #[test]
+    fn exit_summary_empty_holdings() {
+        let mut s = TradingState::new(100.0);
+        s.realized_pnl = 3.0;
+
+        let summary = s.exit_summary(&HashMap::new());
+        assert!(summary.holdings.is_empty());
+        assert!(approx_eq(summary.unrealized_pnl, 0.0));
+        assert!(approx_eq(summary.total_pnl, 3.0)); // realized only
+    }
+}
