@@ -140,11 +140,23 @@ Standalone probe binaries to validate the full CLOB round-trip before integratio
 
 See `CLAUDE.md` for detailed probe findings (import paths, minimum sizes, balance format, etc.).
 
-### Account Setup
+### Account Setup & Configuration
 
 **Wallet type:** `SignatureType::GnosisSafe` (type 2). The user imports their EOA private key into MetaMask, signs into polymarket.com (which deploys a Gnosis Safe and sets up on-chain approvals), and funds the Safe with USDC on Polygon.
 
-No `setup-account` subcommand needed — signing into polymarket.com handles Safe deployment, token approvals, and API key creation. The bot only needs `POLYMARKET_PRIVATE_KEY` in `.env`.
+**Config file:** TOML format. `config.toml` (gitignored) holds the private key and poll interval; `config.toml.template` is checked in as a reference. Copytrade params (trader address, budget, copy percentage, max trade size) remain CLI args.
+
+```toml
+# config.toml
+private_key = "0x..."       # EOA private key (hex)
+poll_interval_secs = 5
+```
+
+**`setup-account` binary:** Standalone binary (`src/bin/setup_account.rs`). Accepts a private key (via flag or stdin), validates CLOB authentication (GnosisSafe), prints the derived EOA and Safe addresses, checks balance/allowances, and writes `config.toml`. This is the entry point for new users.
+
+```bash
+cargo run --bin setup-account -- --private-key <hex>
+```
 
 ### Authentication Flow
 
@@ -190,7 +202,15 @@ Poll `client.order(order_id)` after submission. Status lifecycle: `Live → Matc
 
 SDK has no built-in retry. Wrap order submission with exponential backoff for transient failures (HTTP 429/5xx, network errors). Non-retryable errors (insufficient balance, invalid price, geoblock) should fail fast with a clear message.
 
-### 3B — Integration
+### 3B — Config & Setup
+
+- Add `toml` dependency
+- Config struct (`AppConfig`) with serde deserialization — private key, poll interval, copytrade params
+- `config.toml.template` checked in, `config.toml` gitignored
+- `setup-account` binary — validate auth, print addresses + balance, write `config.toml`
+- Migrate main binary to read private key + poll interval from `config.toml`; copytrade params stay as CLI args
+
+### 3C — Live Execution Integration
 
 - Auth module — `LocalSigner` creation, GnosisSafe `authentication_builder` flow
 - Order executor — `SimulatedOrder` → limit order build/sign/post pipeline
@@ -202,14 +222,15 @@ SDK has no built-in retry. Wrap order submission with exponential backoff for tr
 ### CLI Target
 
 ```bash
-copytrade --live \
-  --trader-address <proxy-wallet-address> \
-  --budget <usd-amount> \
-  --copy-percentage <0-100> \
-  --max-trade-size <0-100>
-```
+# First-time setup (standalone binary)
+setup-account --private-key <hex>
 
-Environment: `POLYMARKET_PRIVATE_KEY` (hex).
+# Dry-run (private key from config.toml, copytrade params as CLI args)
+copytrade --dry-run --trader-address <addr> --budget 1000 --copy-percentage 50 --max-trade-size 30
+
+# Live execution
+copytrade --live --trader-address <addr> --budget 1000 --copy-percentage 50 --max-trade-size 30
+```
 
 ---
 

@@ -19,7 +19,7 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 - **SDK:** `polymarket-client-sdk` v0.3 with `data` + `gamma` features
 - **Data sources:** REST polling (`data-api.polymarket.com`), gamma API for exit pricing (`gamma-api.polymarket.com`); RTDS WebSocket planned for Phase 5
 - **Output:** JSON events to stdout, tracing logs to stderr
-- **Config:** CLI args + `.env` file (`POLL_INTERVAL_SECS`, `RUST_LOG`)
+- **Config:** `config.toml` (TOML) for private key + poll interval; copytrade params via CLI args; `RUST_LOG` via env
 
 ### Module Structure
 
@@ -60,14 +60,16 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 **Exit pricing:** When a held position leaves the active target set (trader exits or market resolves), the engine looks up its current price via a two-layer map: (1) active positions from the data API, (2) gamma API (`gamma::Client`, `markets?clob_token_ids=<id>`) for any assets not found in layer 1. Gamma errors propagate — no silent fallbacks. Exit sells always execute regardless of proceeds (positions resolved at price 0 must still be removed from holdings). Exit events are logged at INFO with reason (`resolved` for price 0/1, `trader exited` otherwise) and a short trader ID (last 6 chars of address). Market resolutions typically lag 5-20 minutes behind the scheduled close time due to UMA oracle settlement.
 
 ### Phase 3: Live Execution
-- [x] CLOB auth & order probe (`probe_clob_trade`, `probe_my_positions`)
-- [x] Engine: $1 minimum for buys, no minimum for sells (`MIN_ORDER_USD`)
-- [ ] Auth module integration
-- [ ] Order executor (`SimulatedOrder` → CLOB limit order pipeline)
-- [ ] Order status tracking (partial fills)
-- [ ] Retry with exponential backoff
-- [ ] `--live` mode in main binary
-- [ ] Balance guard
+- [x] 3A — CLOB auth & order probe (`probe_clob_trade`, `probe_my_positions`)
+- [x] 3A — Engine: $1 minimum for buys, no minimum for sells (`MIN_ORDER_USD`)
+- [ ] 3B — Config file (`config.toml`, TOML format) replacing `.env` for all settings
+- [ ] 3B — `setup-account` binary (validate auth, print addresses + balance, write config)
+- [ ] 3C — Auth module integration
+- [ ] 3C — Order executor (`SimulatedOrder` → CLOB limit order pipeline)
+- [ ] 3C — Order status tracking (partial fills)
+- [ ] 3C — Retry with exponential backoff
+- [ ] 3C — `--live` mode in main binary
+- [ ] 3C — Balance guard
 
 **CLOB probe findings:** GnosisSafe (type 2) auth works with `Config::builder().use_server_time(true)` to avoid clock drift. Key import paths: `polymarket_client_sdk::auth::{LocalSigner, Signer}`, `clob::{Client, Config}`, `clob::types::{SignatureType, Side, Amount, OrderType}`. Minimum order size is $1 notional (size * price >= $1.00) for buys only — sells (closing positions) have no minimum and work below $1. Balance is returned in raw USDC units (6 decimals, e.g. `5000000` = $5). Limit orders at unfillable prices ($0.01) can be placed and cancelled without funds. Market orders use `Amount::usdc(dec!(2.00))?` with `OrderType::FAK`. Safe address derived via `derive_safe_wallet(eoa, POLYGON)`. Tested end-to-end: placed a $2 FAK market buy on Brazil presidential election (Lula Yes), received 3.85 shares at ~$0.52, position confirmed via both data API and SDK `data::Client::positions()`. Companion probe `probe_my_positions` fetches the Safe wallet's positions using the typed SDK data client.
 
@@ -93,12 +95,21 @@ See `PLAN.md` for the full implementation plan — consult it for detailed goals
 - [ ] Config examples
 - [ ] Final testing with real trader
 
-## Running (Dry-Run)
+## Running
 
 ```bash
-cp .env.template .env          # adjust POLL_INTERVAL_SECS if desired
-cargo run --bin copytrade -- \
-  --dry-run \
+# First-time setup (writes config.toml with private key)
+cargo run --bin setup-account -- --private-key <hex>
+
+# Dry-run (private key from config.toml, copytrade params as CLI args)
+cargo run --bin copytrade -- --dry-run \
+  --trader-address 0x<proxy_wallet> \
+  --budget 1000 \
+  --copy-percentage 50 \
+  --max-trade-size 30
+
+# Live execution
+cargo run --bin copytrade -- --live \
   --trader-address 0x<proxy_wallet> \
   --budget 1000 \
   --copy-percentage 50 \
@@ -114,5 +125,5 @@ To find active traders: `GET https://data-api.polymarket.com/v1/leaderboard?limi
 - Exploration probes go in standalone files/binaries before being integrated
 - Results and API findings documented in `EXPLORATION.md`
 - All secrets/keys kept out of version control
-- `.env.template` is the canonical env-var reference; `.env` is gitignored
+- `config.toml.template` is the canonical config reference; `config.toml` is gitignored
 - Temporary/debug logs go in `log/` (gitignored)
