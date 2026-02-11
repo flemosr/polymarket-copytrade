@@ -13,18 +13,24 @@ use tracing::{info, warn};
 use polymarket_copytrade::api::{
     build_exit_price_map, fetch_active_positions, fetch_recent_trades,
 };
+use polymarket_copytrade::auth::{self, ClobContext};
 use polymarket_copytrade::config::{AppConfig, CONFIG_PATH};
 use polymarket_copytrade::engine::{compute_orders, compute_target_state, compute_weights};
+use polymarket_copytrade::executor;
 use polymarket_copytrade::reporter;
 use polymarket_copytrade::state::TradingState;
-use polymarket_copytrade::types::{CopytradeEvent, EventTrigger};
+use polymarket_copytrade::types::{CopytradeEvent, EventTrigger, HeldPosition};
 
 #[derive(Parser)]
 #[command(name = "copytrade", about = "Polymarket portfolio copytrade bot")]
 struct Args {
     /// Run in simulation mode (no real orders placed)
-    #[arg(long)]
+    #[arg(long, conflicts_with = "live")]
     dry_run: bool,
+
+    /// Run in live mode (places real CLOB orders)
+    #[arg(long, conflicts_with = "dry_run")]
+    live: bool,
 
     /// Trader proxy wallet address to copy
     #[arg(long)]
@@ -55,9 +61,9 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    // Validate
-    if !args.dry_run {
-        anyhow::bail!("Only --dry-run mode is supported in Phase 2");
+    // Require exactly one mode
+    if !args.dry_run && !args.live {
+        anyhow::bail!("Must specify either --dry-run or --live");
     }
     if args.budget <= 0.0 {
         anyhow::bail!("--budget must be positive");
@@ -83,6 +89,7 @@ async fn main() -> Result<()> {
     let trader_short_id = &args.trader_address[args.trader_address.len().saturating_sub(6)..];
 
     let poll_interval_secs = config.settings.poll_interval_secs;
+    let is_live = args.live;
 
     let mode = if args.dry_run { "dry-run" } else { "live" };
     info!(
@@ -94,6 +101,95 @@ async fn main() -> Result<()> {
     let gamma_client = GammaClient::default();
     let mut state = TradingState::new(args.budget);
     let mut seen_hashes: HashSet<String> = HashSet::new();
+
+    // Authenticate with CLOB if live mode
+    let clob_ctx = if is_live {
+        info!("Authenticating with CLOB API...");
+        let ctx = auth::authenticate(&config.account.private_key).await?;
+        info!("Authenticated — EOA: {} Safe: {}", ctx.eoa, ctx.safe);
+
+        // Cancel any stale orders from previous runs
+        info!("Cancelling stale orders from previous runs...");
+        match ctx.client.cancel_all_orders().await {
+            Ok(resp) => {
+                if !resp.canceled.is_empty() {
+                    info!("Cancelled {} stale order(s)", resp.canceled.len());
+                }
+            }
+            Err(e) => {
+                warn!("Failed to cancel stale orders: {e}");
+            }
+        }
+
+        // Seed holdings from actual Safe wallet positions
+        let mut seeded_prices: HashMap<String, f64> = HashMap::new();
+        info!("Fetching existing Safe wallet positions...");
+        match fetch_active_positions(&data_client, ctx.safe).await {
+            Ok(positions) => {
+                if !positions.is_empty() {
+                    info!(
+                        "Found {} existing position(s) in Safe wallet",
+                        positions.len()
+                    );
+                    for pos in &positions {
+                        let shares = pos.size.to_f64().unwrap_or(0.0);
+                        let avg_cost = pos.avg_price.to_f64().unwrap_or(0.0);
+                        let cur_price = pos.cur_price.to_f64().unwrap_or(0.0);
+                        let total_cost = shares * avg_cost;
+                        let asset = pos.asset.to_string();
+
+                        seeded_prices.insert(asset.clone(), cur_price);
+                        state.holdings.insert(
+                            asset.clone(),
+                            HeldPosition {
+                                asset,
+                                title: pos.title.clone(),
+                                outcome: pos.outcome.clone(),
+                                shares,
+                                total_cost,
+                                avg_cost,
+                            },
+                        );
+                        state.budget_remaining -= total_cost;
+                        state.total_spent += total_cost;
+                    }
+                    info!(
+                        "Seeded {} holding(s) (${:.2} committed, ${:.2} remaining)",
+                        state.holdings.len(),
+                        state.total_spent,
+                        state.budget_remaining,
+                    );
+                }
+            }
+            Err(e) => {
+                warn!("Failed to fetch Safe wallet positions: {e}");
+            }
+        }
+
+        // Check balance + holdings current value >= budget
+        let balance = executor::check_balance(&ctx).await?;
+        let holdings_value: f64 = state
+            .holdings
+            .iter()
+            .map(|(asset, h)| {
+                // Use seeded_prices (cur_price from data API) if available, fall back to avg_cost
+                let price = seeded_prices.get(asset).copied().unwrap_or(h.avg_cost);
+                h.shares * price
+            })
+            .sum();
+        let total_capital = balance + holdings_value;
+        info!("USDC balance: ${balance:.2}, holdings value: ${holdings_value:.2}, total: ${total_capital:.2}");
+        if total_capital < args.budget {
+            anyhow::bail!(
+                "Insufficient capital: ${total_capital:.2} (${balance:.2} cash + ${holdings_value:.2} holdings) but --budget is ${:.2}",
+                args.budget
+            );
+        }
+
+        Some(ctx)
+    } else {
+        None
+    };
 
     // --- Initial replication ---
     info!("Fetching trader portfolio...");
@@ -115,7 +211,15 @@ async fn main() -> Result<()> {
                     &HashMap::new(),
                     trader_short_id,
                 );
-                state.apply_orders(&orders);
+
+                let execution_results = if let Some(ctx) = &clob_ctx {
+                    let results = executor::execute_orders(ctx, &orders).await;
+                    state.apply_execution_results(&orders, &results);
+                    Some(results)
+                } else {
+                    state.apply_orders(&orders);
+                    None
+                };
 
                 let event = CopytradeEvent {
                     timestamp: chrono::Utc::now().to_rfc3339(),
@@ -124,6 +228,7 @@ async fn main() -> Result<()> {
                     orders,
                     budget_remaining: state.budget_remaining,
                     total_spent: state.total_spent,
+                    execution_results,
                 };
                 reporter::report_event(&event);
                 state.total_events += 1;
@@ -149,6 +254,14 @@ async fn main() -> Result<()> {
     }
 
     // --- Polling loop ---
+    // Check if any initial orders are resting (give them a moment to fill)
+    if !state.resting_orders.is_empty() {
+        info!(
+            "Tracking {} resting order(s) from initial replication",
+            state.resting_orders.len()
+        );
+    }
+
     info!("Entering polling loop (interval: {poll_interval_secs}s). Press Ctrl+C to stop.");
     let poll_duration = Duration::from_secs(poll_interval_secs);
 
@@ -162,6 +275,7 @@ async fn main() -> Result<()> {
                 if let Err(e) = poll_cycle(
                     &data_client,
                     &gamma_client,
+                    clob_ctx.as_ref(),
                     trader_addr,
                     trader_short_id,
                     &mut state,
@@ -171,6 +285,39 @@ async fn main() -> Result<()> {
                 ).await {
                     warn!("Poll cycle error: {e}");
                 }
+            }
+        }
+    }
+
+    // --- Cancel resting orders on shutdown (live mode) ---
+    if let Some(ctx) = &clob_ctx {
+        if !state.resting_orders.is_empty() {
+            info!(
+                "Cancelling {} resting order(s) on shutdown...",
+                state.resting_orders.len()
+            );
+            let order_ids: Vec<String> = state
+                .resting_orders
+                .iter()
+                .map(|r| r.order_id.clone())
+                .collect();
+            let id_refs: Vec<&str> = order_ids.iter().map(|s| s.as_str()).collect();
+            match ctx.client.cancel_orders(&id_refs).await {
+                Ok(resp) => {
+                    if !resp.canceled.is_empty() {
+                        info!("Cancelled {} order(s)", resp.canceled.len());
+                    }
+                    for (id, err) in &resp.not_canceled {
+                        warn!("Failed to cancel order {id}: {err}");
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to cancel resting orders: {e}");
+                }
+            }
+            // Resolve all resting orders as cancelled in state
+            for order_id in &order_ids {
+                state.resolve_resting_cancel(order_id);
             }
         }
     }
@@ -197,6 +344,7 @@ async fn main() -> Result<()> {
 async fn poll_cycle(
     client: &Client,
     gamma: &GammaClient,
+    clob_ctx: Option<&ClobContext>,
     addr: Address,
     trader_short_id: &str,
     state: &mut TradingState,
@@ -204,6 +352,11 @@ async fn poll_cycle(
     copy_pct: f64,
     max_trade_pct: f64,
 ) -> Result<()> {
+    // Check resting orders before computing new ones
+    if let Some(ctx) = clob_ctx {
+        executor::check_resting_orders(ctx, state).await;
+    }
+
     info!("Polling... (seen: {} hashes)", seen_hashes.len());
     let trades = fetch_recent_trades(client, addr, 50).await?;
 
@@ -236,7 +389,14 @@ async fn poll_cycle(
     let orders = compute_orders(&targets, state, state.budget_remaining, &price_map, trader_short_id);
 
     if !orders.is_empty() {
-        state.apply_orders(&orders);
+        let execution_results = if let Some(ctx) = clob_ctx {
+            let results = executor::execute_orders(ctx, &orders).await;
+            state.apply_execution_results(&orders, &results);
+            Some(results)
+        } else {
+            state.apply_orders(&orders);
+            None
+        };
 
         let event = CopytradeEvent {
             timestamp: chrono::Utc::now().to_rfc3339(),
@@ -245,6 +405,7 @@ async fn poll_cycle(
             orders,
             budget_remaining: state.budget_remaining,
             total_spent: state.total_spent,
+            execution_results,
         };
         reporter::report_event(&event);
         state.total_events += 1;

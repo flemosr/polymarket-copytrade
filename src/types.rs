@@ -56,6 +56,40 @@ pub enum EventTrigger {
     TradeDetected,
 }
 
+/// Status of a live order execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum ExecutionStatus {
+    Filled,
+    PartialFill,
+    Resting,
+    Failed,
+    Skipped,
+}
+
+/// A resting order on the CLOB book that hasn't filled yet.
+#[derive(Debug, Clone, Serialize)]
+pub struct RestingOrder {
+    pub order_id: String,
+    pub asset: String,
+    pub title: String,
+    pub outcome: String,
+    pub side: OrderSide,
+    pub shares: f64,
+    pub price: f64,
+    pub cost_usd: f64,
+}
+
+/// Result of executing a single order on the CLOB.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExecutionResult {
+    pub order_index: usize,
+    pub status: ExecutionStatus,
+    pub order_id: String,
+    pub filled_shares: f64,
+    pub filled_cost_usd: f64,
+    pub error_msg: Option<String>,
+}
+
 /// Per-event JSON log entry emitted to stdout.
 #[derive(Debug, Clone, Serialize)]
 pub struct CopytradeEvent {
@@ -65,6 +99,8 @@ pub struct CopytradeEvent {
     pub orders: Vec<SimulatedOrder>,
     pub budget_remaining: f64,
     pub total_spent: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_results: Option<Vec<ExecutionResult>>,
 }
 
 /// Per-position summary in the exit report.

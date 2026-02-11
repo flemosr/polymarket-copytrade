@@ -99,13 +99,9 @@ pub fn compute_orders(
     let target_assets: std::collections::HashSet<&str> =
         targets.iter().map(|t| t.market.asset.as_str()).collect();
 
-    // For each target, compare with holdings
+    // For each target, compare with effective holdings (includes resting orders)
     for target in targets {
-        let held_shares = state
-            .holdings
-            .get(&target.market.asset)
-            .map(|h| h.shares)
-            .unwrap_or(0.0);
+        let held_shares = state.effective_held_shares(&target.market.asset);
 
         let diff = target.target_shares - held_shares;
 
@@ -138,6 +134,11 @@ pub fn compute_orders(
     // Sell holdings that the trader has exited entirely
     for (asset, held) in &state.holdings {
         if !target_assets.contains(asset.as_str()) && held.shares > 0.0 {
+            // Use effective shares to account for any resting sell orders
+            let effective = state.effective_held_shares(asset);
+            if effective <= 0.0 {
+                continue; // already covered by a resting sell
+            }
             let price = match price_map.get(asset) {
                 Some(&p) => p,
                 None => {
@@ -157,7 +158,7 @@ pub fn compute_orders(
                 "[{trader_short_id}] Position exit: \"{}\" ({}) — price: {price:.4} ({reason})",
                 held.title, held.outcome
             );
-            let proceeds = held.shares * price;
+            let proceeds = effective * price;
             sells.push(SimulatedOrder {
                 market: MarketPosition {
                     condition_id: String::new(),
@@ -168,7 +169,7 @@ pub fn compute_orders(
                     event_slug: String::new(),
                 },
                 side: OrderSide::Sell,
-                shares: held.shares,
+                shares: effective,
                 price,
                 cost_usd: proceeds,
             });

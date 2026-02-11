@@ -25,6 +25,7 @@ rust_decimal = "1"
 rust_decimal_macros = "1"
 toml = "0.8"
 rpassword = "7"
+k256 = { version = "0.13.4", features = ["ecdsa"] }
 
 [[bin]]
 name = "copytrade"

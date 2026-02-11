@@ -1,6 +1,8 @@
 pub mod api;
+pub mod auth;
 pub mod config;
 pub mod engine;
+pub mod executor;
 pub mod reporter;
 pub mod state;
 pub mod types;
