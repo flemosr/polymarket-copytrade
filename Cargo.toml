@@ -4,6 +4,8 @@ version = "0.1.0"
 authors = ["Rafael Lemos <contact@flemosr.com>"]
 edition = "2024"
 rust-version = "1.88"
+readme = "README.md"
+license = "Apache-2.0"
 publish = false
 
 [dependencies]
