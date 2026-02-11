@@ -22,6 +22,7 @@ dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rust_decimal = "1"
+rust_decimal_macros = "1"
 
 [[bin]]
 name = "copytrade"
@@ -46,3 +47,11 @@ path = "src/bin/probe_clob_ws.rs"
 [[bin]]
 name = "probe_ws_btc"
 path = "src/bin/probe_ws_btc.rs"
+
+[[bin]]
+name = "probe_clob_trade"
+path = "src/bin/probe_clob_trade.rs"
+
+[[bin]]
+name = "probe_my_positions"
+path = "src/bin/probe_my_positions.rs"
