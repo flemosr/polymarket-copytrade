@@ -129,29 +129,33 @@ copytrade --dry-run \
 
 Extend the bot to execute real trades via the CLOB API. The CLOB module is always available in the SDK (no feature gate). Phase 3 adds authenticated order placement: credential derivation, order signing (EIP-712), and submission.
 
+### 3A — CLOB Auth & Order Probe (done)
+
+Standalone probe binaries to validate the full CLOB round-trip before integration:
+
+- `probe_clob_trade` — authenticate (GnosisSafe), place/query/cancel a limit order, optional FAK market buy
+- `probe_my_positions` — fetch own Safe wallet positions via SDK `data::Client`
+- Confirmed: auth, limit orders, market orders, cancellation, position reads all work end-to-end
+- Updated `MIN_ORDER_USD` to $1.00 for buys; sells have no minimum
+
+See `CLAUDE.md` for detailed probe findings (import paths, minimum sizes, balance format, etc.).
+
 ### Account Setup
 
-Prerequisite: a Polymarket account with a funded funder address. The funder must match the address shown on the Polymarket profile (proxy wallet for browser/Magic wallets, EOA for standalone wallets).
+**Wallet type:** `SignatureType::GnosisSafe` (type 2). The user imports their EOA private key into MetaMask, signs into polymarket.com (which deploys a Gnosis Safe and sets up on-chain approvals), and funds the Safe with USDC on Polygon.
 
-One-time on-chain setup before live trading:
-
-1. **Derive API credentials** — `client.create_or_derive_api_key(&signer, None)` returns `Credentials { key, secret, passphrase }`. Idempotent — safe to call on every startup, or persist credentials to skip the round-trip.
-2. **On-chain token approvals** — the SDK does NOT handle these (the docs just say "ensure proper token approvals"). Must send approval transactions via alloy `Provider`. Contract addresses sourced from SDK `contract_config()` and `examples/approvals.rs`:
-   - ERC-20 `approve(spender, U256::MAX)` on USDCe (`0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`) for three spenders:
-     - CTF Exchange (`0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E`)
-     - Neg Risk CTF Exchange (`0xC5d563A36AE78145C45a50134d48A1215220f80a`)
-     - Neg Risk Adapter (`0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296`)
-   - ERC-1155 `setApprovalForAll(operator, true)` on Conditional Tokens (`0x4D97DCd97eC945f40cF65F87097ACe5EA0476045`) for the same three spenders
-   - Requires POL for gas. SDK provides `contract_config()` for addresses.
-3. **Signature type detection** — depends on wallet type: `Eoa` (type 0, standalone wallet), `Proxy` (type 1, Magic/email login), `GnosisSafe` (type 2, browser wallet). The SDK auto-derives the funder (proxy wallet) address via CREATE2 for non-EOA types.
+No `setup-account` subcommand needed — signing into polymarket.com handles Safe deployment, token approvals, and API key creation. The bot only needs `POLYMARKET_PRIVATE_KEY` in `.env`.
 
 ### Authentication Flow
 
 ```
-Private Key (hex) → alloy LocalSigner (.with_chain_id(137))
-  → Client::new(url).authentication_builder(&signer)
-    .signature_type(type)
-    .authenticate().await?
+POLYMARKET_PRIVATE_KEY (hex, with or without 0x)
+  → LocalSigner::from_str(&key)?.with_chain_id(Some(POLYGON))
+  → derive_safe_wallet(eoa, POLYGON) → Safe address
+  → Client::new(CLOB_API_BASE, Config::builder().use_server_time(true).build())?
+      .authentication_builder(&signer)
+      .signature_type(SignatureType::GnosisSafe)
+      .authenticate().await?
   → Client<Authenticated<Normal>>
 ```
 
@@ -172,10 +176,11 @@ SimulatedOrder { token_id, side, price, shares }
 
 Design decisions:
 - **Limit orders (GTC)** by default — ensures we get our target price or better, avoids slippage on thin books. Market orders (FOK/FAK) as an option for time-sensitive fills.
-- **Tick size validation** — SDK's `tick_size(token_id)` returns the minimum price increment (cached). The order builder enforces this.
+- **Minimum order size** — $1 notional for buys (size * price >= $1.00). Sells (closing positions) have no minimum.
+- **Tick size validation** — SDK's `tick_size(token_id)` returns the minimum price increment. The order builder enforces this.
 - **Lot size** — max 2 decimal places on share quantities (`LOT_SIZE_SCALE = 2`).
-- **`balance_allowance()`** — check USDCe balance and approval status before placing orders.
-- **`postOnly` option** — for limit orders, prevents immediate matching against existing liquidity (order is rejected if marketable). Useful to guarantee maker fees, but may cause rejections in fast-moving markets — evaluate per use case.
+- **Neg-risk check** — `client.neg_risk(token_id)` determines which exchange contract to use.
+- **`balance_allowance()`** — check USDC balance (raw 6-decimal units) and approval status before placing orders.
 
 ### Order Status Tracking
 
@@ -185,21 +190,18 @@ Poll `client.order(order_id)` after submission. Status lifecycle: `Live → Matc
 
 SDK has no built-in retry. Wrap order submission with exponential backoff for transient failures (HTTP 429/5xx, network errors). Non-retryable errors (insufficient balance, invalid price, geoblock) should fail fast with a clear message.
 
-### Implementation Checklist
+### 3B — Integration
 
-- [ ] `setup-account` subcommand — on-chain approvals (alloy `Provider` + `sol!` macro, needs `alloy` with `contract`, `providers`, `reqwest` features)
-- [ ] Auth module — `LocalSigner` creation, `authentication_builder` flow, optional credentials persistence
-- [ ] Order executor — `SimulatedOrder` → limit order build/sign/post pipeline
-- [ ] Order tracker — poll for fill status, handle partial fills, log outcomes
-- [ ] Retry wrapper — exponential backoff for `post_order` and API calls
-- [ ] `--live` mode in main binary — same polling loop as dry-run but with real order execution after `compute_orders`
-- [ ] Balance guard — check USDCe balance before each order batch, skip if insufficient
+- Auth module — `LocalSigner` creation, GnosisSafe `authentication_builder` flow
+- Order executor — `SimulatedOrder` → limit order build/sign/post pipeline
+- Order tracker — poll for fill status, handle partial fills, log outcomes
+- Retry wrapper — exponential backoff for `post_order` and API calls
+- `--live` mode in main binary — same polling loop as dry-run but with real order execution after `compute_orders`
+- Balance guard — check USDC balance before each order batch, skip if insufficient
 
 ### CLI Target
 
 ```bash
-copytrade setup-account --private-key <key>
-
 copytrade --live \
   --trader-address <proxy-wallet-address> \
   --budget <usd-amount> \
@@ -207,7 +209,7 @@ copytrade --live \
   --max-trade-size <0-100>
 ```
 
-Environment: `POLYMARKET_PRIVATE_KEY` (hex), `POLYGON_RPC_URL` (for on-chain approvals only).
+Environment: `POLYMARKET_PRIVATE_KEY` (hex).
 
 ---
 
